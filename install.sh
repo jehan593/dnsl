@@ -43,6 +43,18 @@ kill_running_tray_instances() {
     done
 }
 
+# autostart.c writes ~/.config/autostart/dnsl-tray.desktop for whichever user enabled "Start with
+# this session" in the tray — never touched by install.sh's own install path, so uninstall has to
+# know about it explicitly or it's left behind pointing at a binary that's gone. Best-effort: only
+# the invoking user's autostart dir is reachable from here (via $SUDO_USER when run under sudo, the
+# common case for the default /usr/local PREFIX); a system install used by other users on the same
+# machine would need each of those users to remove their own entry, same as the toggle itself is
+# per-user.
+invoking_user_home() {
+    local user="${SUDO_USER:-${USER:-$(id -un)}}"
+    getent passwd "$user" 2>/dev/null | cut -d: -f6
+}
+
 BIN_DIR="$PREFIX/bin"
 ASSETS_DIR="$PREFIX/share/dnsl"
 APPS_DIR="$PREFIX/share/applications"
@@ -72,6 +84,10 @@ if [ "$MODE" = "uninstall" ]; then
     done
     command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
     command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -t "$ICON_THEME_DIR" >/dev/null 2>&1 || true
+    user_home="$(invoking_user_home)"
+    if [ -n "$user_home" ]; then
+        rm -f "$user_home/.config/autostart/dnsl-tray.desktop"
+    fi
     echo "Done. /etc/dnsl/settings.json (if any) was left alone."
     exit 0
 fi
