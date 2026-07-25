@@ -26,12 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/jehan593/dnsl/main/scripts/get.sh |
 ```
 
 Downloads the latest release, installs to `/usr/local` (system-wide), and registers the app +
-`.desktop` entry. Re-run the same command any time to update to the latest release. For a per-user
-install that needs no root at all, set `DNSL_PREFIX=$HOME/.local` instead:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/jehan593/dnsl/main/scripts/get.sh | DNSL_PREFIX=$HOME/.local bash
-```
+`.desktop` entry. Re-run the same command any time to update to the latest release.
 
 Then run `dnsl` (or find it in your applications menu). The tray's first launch on a fresh machine
 prompts once via `pkexec` to install and start the background service; after that it's silent.
@@ -62,9 +57,8 @@ libgtk-3-dev libglib2.0-dev libssl-dev uuid-dev libfontconfig-dev libayatana-app
 git clone https://github.com/jehan593/dnsl
 cd dnsl
 make
-make install                    # installs to /usr/local (system-wide; needs sudo)
-make PREFIX=$HOME/.local install  # or per-user instead
-make uninstall
+sudo make install                # installs to /usr/local (system-wide)
+sudo make uninstall
 ```
 
 Then run `dnsl` (or find it in your applications menu). The tray's first launch on a fresh machine
