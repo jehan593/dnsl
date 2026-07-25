@@ -27,6 +27,22 @@ elif [ -n "${1:-}" ]; then
     PREFIX="$1"
 fi
 
+# Kills any running tray instances (but never a live `--daemon` service, which systemd owns and
+# would otherwise be left in a stopped state until manually restarted — see below). Needed because
+# GtkApplication's single-instance mode means a tray process left running across an
+# uninstall/install cycle just gets silently re-activated by the next launch instead of a fresh
+# process starting, and after this script replaces the on-disk binary that stale process's
+# /proc/self/exe resolves to "<path> (deleted)" — which breaks its own "Install / start background
+# service…" menu item (pkexec can't exec a path that no longer exists).
+kill_running_tray_instances() {
+    local pid
+    for pid in $(pgrep -x dnsl 2>/dev/null || true); do
+        if ! grep -qz -- '--daemon' "/proc/$pid/cmdline" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+}
+
 BIN_DIR="$PREFIX/bin"
 ASSETS_DIR="$PREFIX/share/dnsl"
 APPS_DIR="$PREFIX/share/applications"
@@ -35,6 +51,7 @@ DESKTOP_FILE="$APPS_DIR/dnsl.desktop"
 
 if [ "$MODE" = "uninstall" ]; then
     echo "Uninstalling dnsl from $PREFIX..."
+    kill_running_tray_instances
     if systemctl is-enabled dnsl.service >/dev/null 2>&1 || systemctl is-active dnsl.service >/dev/null 2>&1; then
         if [ "$(id -u)" -eq 0 ]; then
             echo "Stopping and removing dnsl.service..."
@@ -65,6 +82,7 @@ if [ ! -x "$SCRIPT_DIR/dnsl" ]; then
 fi
 
 echo "Installing dnsl to $PREFIX..."
+kill_running_tray_instances
 mkdir -p "$BIN_DIR" "$ASSETS_DIR/fonts" "$ASSETS_DIR/icons" "$APPS_DIR"
 
 install -m 755 "$SCRIPT_DIR/dnsl" "$BIN_DIR/dnsl"
