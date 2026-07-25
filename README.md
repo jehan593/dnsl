@@ -45,10 +45,11 @@ prebuilt binary, build from source instead (see below).
 curl -fsSL https://raw.githubusercontent.com/jehan593/dnsl/main/scripts/get.sh | sudo bash -s -- --uninstall
 ```
 
-Removes the binary, desktop entry, and bundled fonts/icons. If `dnsl.service` is still installed,
-it prints the two commands (run as root) to remove it — this is deliberately not automatic so
-uninstalling the app doesn't silently revert DNS on a machine where other things might depend on
-the timing. `/etc/dnsl/settings.json` is left alone either way.
+Removes the binary, desktop entry, and bundled fonts/icons. Since this runs as root (via `sudo`),
+it also stops, disables, and removes `dnsl.service` if it's installed — DNS reverts to normal
+immediately as part of uninstalling. `/etc/dnsl/settings.json` is left alone either way, so a later
+reinstall picks up your previous provider choice. Running the uninstaller unprivileged instead just
+prints the two commands to remove the service yourself.
 
 ## Build from source
 
