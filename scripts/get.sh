@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # One-line install/update/uninstall for dnsl, fetching the latest prebuilt release from GitHub.
+# Always system-wide (/usr/local) and always run as root — the background daemon that does the
+# actual DNS work needs root regardless (binding port 53, the resolve1 D-Bus calls), so there's no
+# real no-root install path to offer here; keep it to one command.
 #
 #   curl -fsSL https://raw.githubusercontent.com/jehan593/dnsl/main/scripts/get.sh | sudo bash
 #   curl -fsSL https://raw.githubusercontent.com/jehan593/dnsl/main/scripts/get.sh | sudo bash -s -- --uninstall
 #
-# Default PREFIX is /usr/local (system-wide, matching install.sh's own default), which is why the
-# examples above run as root — this script only places the tray binary + assets on disk, same as
-# install.sh; it never touches dnsl.service or /etc/dnsl/settings.json. For a per-user install that
-# needs no root at all, set DNSL_PREFIX=$HOME/.local (no sudo needed then).
+# This script only places the tray binary + assets on disk, same as install.sh; it never touches
+# dnsl.service or /etc/dnsl/settings.json directly (install.sh --uninstall handles the former when
+# run as root).
 #
 # Install and update are the same command: it always re-fetches the latest release and reinstalls
 # over the previous copy. The extracted release is kept under CACHE_DIR so a later --uninstall (or
@@ -16,7 +18,7 @@ set -euo pipefail
 
 REPO="jehan593/dnsl"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dnsl/current-release"
-PREFIX="${DNSL_PREFIX:-/usr/local}"
+PREFIX="/usr/local"
 
 if [ "${1:-}" = "--uninstall" ]; then
     if [ ! -x "$CACHE_DIR/install.sh" ]; then
