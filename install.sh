@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Installs/uninstalls the dnsl tray binary + assets — mirrors linker-linux's install.sh shape.
-# This does NOT touch the systemd service: dnsl's own installer.c registers/starts dnsl.service
+# Install never touches the systemd service: dnsl's own installer.c registers/starts dnsl.service
 # itself (via a one-time pkexec prompt) the first time the tray can't reach it — see CLAUDE.md
 # "Why a systemd service". This script only places files on disk and never needs to run as root
 # for the default per-user PREFIX; use a system PREFIX (e.g. /usr/local, this Makefile's default)
 # with sudo if you want dnsl available for every user on the machine.
+#
+# Uninstall DOES tear the service down too, but only when run as root (it can't sudo internally
+# without surprising a piped `curl | bash` — if run unprivileged, it just prints the two commands
+# to do it yourself). Since the default PREFIX (/usr/local) already needs root to remove its own
+# files, `sudo ./install.sh --uninstall` gets a fully automatic teardown in the common case.
 #
 # Usage:
 #   ./install.sh [PREFIX]              (default: /usr/local)
@@ -31,8 +36,15 @@ DESKTOP_FILE="$APPS_DIR/dnsl.desktop"
 if [ "$MODE" = "uninstall" ]; then
     echo "Uninstalling dnsl from $PREFIX..."
     if systemctl is-enabled dnsl.service >/dev/null 2>&1 || systemctl is-active dnsl.service >/dev/null 2>&1; then
-        echo "note: dnsl.service is still installed — run as root:"
-        echo "  systemctl disable --now dnsl.service && rm -f /etc/systemd/system/dnsl.service && systemctl daemon-reload"
+        if [ "$(id -u)" -eq 0 ]; then
+            echo "Stopping and removing dnsl.service..."
+            systemctl disable --now dnsl.service >/dev/null 2>&1 || true
+            rm -f /etc/systemd/system/dnsl.service
+            systemctl daemon-reload
+        else
+            echo "note: dnsl.service is still installed — run as root:"
+            echo "  systemctl disable --now dnsl.service && rm -f /etc/systemd/system/dnsl.service && systemctl daemon-reload"
+        fi
     fi
     rm -f "$BIN_DIR/dnsl"
     rm -rf "$ASSETS_DIR/fonts" "$ASSETS_DIR/icons"
