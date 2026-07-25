@@ -1,0 +1,18 @@
+## Reference only — not installed by install.sh. installer.c generates the real unit at
+## /etc/systemd/system/dnsl.service itself (with ExecStart pointing at wherever the binary
+## actually ended up) the first time the tray can't reach a running daemon, via a one-time
+## pkexec prompt. This file exists for packagers who'd rather ship a static unit instead —
+## replace ExecStart with your actual install path before using it.
+[Unit]
+Description=dnsl DNS-over-TLS proxy
+After=network.target systemd-resolved.service
+Wants=systemd-resolved.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dnsl --daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,79 @@
+name: Release
+
+# Manually triggered from the Actions tab's "Run workflow" button (or
+# `gh workflow run release.yml -f version=1.2.0`) — there is no automatic trigger on push or tag,
+# matching ../linker-linux's release workflow convention. Leave the version input blank to
+# auto-bump the patch version from the latest existing GitHub Release (e.g. 1.0.0 -> 1.0.1); if no
+# release exists yet, it defaults to 1.0.0. Fill it in to set an exact version instead (e.g. for a
+# major/minor bump, or to re-run a specific version).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.2.0). Leave blank to auto-bump the patch version."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          else
+            latest=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)
+            if [ -z "$latest" ]; then
+              version="1.0.0"
+            else
+              latest="${latest#v}"
+              major=$(echo "$latest" | cut -d. -f1)
+              minor=$(echo "$latest" | cut -d. -f2)
+              patch=$(echo "$latest" | cut -d. -f3)
+              version="$major.$minor.$((patch + 1))"
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: $version"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libgtk-3-dev libglib2.0-dev libssl-dev uuid-dev libfontconfig-dev \
+            libayatana-appindicator3-dev
+
+      - name: Build
+        run: make
+
+      - name: Package release tarball
+        id: package
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          name="dnsl-linux-v${version}-x86_64"
+          mkdir -p "dist/$name"
+          cp dnsl install.sh Makefile "dist/$name/"
+          cp -r data "dist/$name/"
+          cp -r systemd "dist/$name/"
+          tar -C dist -czf "dist/${name}.tar.gz" "$name"
+          echo "asset=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          files: ${{ steps.package.outputs.asset }}
+          generate_release_notes: true
