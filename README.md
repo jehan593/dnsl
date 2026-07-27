@@ -68,3 +68,7 @@ prompts once via `pkexec` to install and start the background service; after tha
 
 See [CLAUDE.md](CLAUDE.md) for module layout, architecture, and porting notes (every module names
 the corresponding `../dnsw` file it was ported from).
+
+## License
+
+[MIT](LICENSE)
