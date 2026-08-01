@@ -182,3 +182,79 @@ GPtrArray *resolved_ctl_restore_dhcp(void)
     g_object_unref(bus);
     return errors;
 }
+
+#define NM_BUS_NAME "org.freedesktop.NetworkManager"
+#define NM_DEVICE_IFACE "org.freedesktop.NetworkManager.Device"
+/* NM_DEVICE_STATE_ACTIVATED from NetworkManager's public D-Bus API (nm-dbus-interface.h) — stable
+ * ABI value, not worth pulling in libnm just for this one constant. */
+#define NM_DEVICE_STATE_ACTIVATED 100u
+
+struct ResolvedCtlWatch {
+    GDBusConnection *bus; /* NULL if the system bus couldn't be reached at start time */
+    guint nm_signal_sub_id;
+    guint poll_source_id;
+    void (*on_reconnect)(gpointer user_data);
+    gpointer user_data;
+};
+
+static void on_nm_device_state_changed(GDBusConnection *connection, const gchar *sender_name,
+                                        const gchar *object_path, const gchar *interface_name,
+                                        const gchar *signal_name, GVariant *parameters,
+                                        gpointer user_data)
+{
+    (void)connection; (void)sender_name; (void)object_path; (void)interface_name; (void)signal_name;
+    ResolvedCtlWatch *watch = user_data;
+
+    guint32 new_state = 0, old_state = 0, reason = 0;
+    g_variant_get(parameters, "(uuu)", &new_state, &old_state, &reason);
+    (void)old_state; (void)reason;
+    if (new_state != NM_DEVICE_STATE_ACTIVATED) return;
+
+    watch->on_reconnect(watch->user_data);
+}
+
+static gboolean on_poll_tick(gpointer user_data)
+{
+    ResolvedCtlWatch *watch = user_data;
+    watch->on_reconnect(watch->user_data);
+    return G_SOURCE_CONTINUE;
+}
+
+ResolvedCtlWatch *resolved_ctl_watch_start(guint poll_interval_seconds,
+                                            void (*on_reconnect)(gpointer user_data),
+                                            gpointer user_data)
+{
+    ResolvedCtlWatch *watch = g_new0(ResolvedCtlWatch, 1);
+    watch->on_reconnect = on_reconnect;
+    watch->user_data = user_data;
+
+    GError *error = NULL;
+    watch->bus = get_system_bus(&error);
+    if (!watch->bus) {
+        g_warning("resolved_ctl_watch: couldn't reach the system D-Bus, reconnect detection "
+                  "disabled (poll-only if enabled): %s", error->message);
+        g_clear_error(&error);
+    } else {
+        /* NULL object_path matches the signal from every device object NM exposes, not just one. */
+        watch->nm_signal_sub_id = g_dbus_connection_signal_subscribe(
+            watch->bus, NM_BUS_NAME, NM_DEVICE_IFACE, "StateChanged", NULL, NULL,
+            G_DBUS_SIGNAL_FLAGS_NONE, on_nm_device_state_changed, watch, NULL);
+    }
+
+    if (poll_interval_seconds > 0) {
+        watch->poll_source_id = g_timeout_add_seconds(poll_interval_seconds, on_poll_tick, watch);
+    }
+
+    return watch;
+}
+
+void resolved_ctl_watch_stop(ResolvedCtlWatch *watch)
+{
+    if (!watch) return;
+    if (watch->poll_source_id) g_source_remove(watch->poll_source_id);
+    if (watch->bus) {
+        if (watch->nm_signal_sub_id) g_dbus_connection_signal_unsubscribe(watch->bus, watch->nm_signal_sub_id);
+        g_object_unref(watch->bus);
+    }
+    g_free(watch);
+}
