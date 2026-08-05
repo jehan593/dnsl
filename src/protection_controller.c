@@ -4,8 +4,11 @@
 #include "resolved_ctl.h"
 
 /* Reconnect-watch poll interval: see resolved_ctl.h's resolved_ctl_watch_start doc comment — this
- * is the backstop leg for drift the event-driven leg doesn't catch. */
-#define RECONNECT_WATCH_POLL_SECONDS 30
+ * is the backstop leg for drift neither event-driven leg catches. Kept short (rather than e.g. 30s)
+ * because a reassert is idempotent and cheap (a few D-Bus calls), so there's no real cost to a
+ * tight worst-case bound here — this is the fallback for drift with no NM state transition and no
+ * sleep/resume cycle, which should be rare, but "rare" isn't "instant" without a short interval. */
+#define RECONNECT_WATCH_POLL_SECONDS 5
 
 struct ProtectionController {
     GMutex mutex;
@@ -91,12 +94,12 @@ static gchar *join_errors(const gchar *prefix, GPtrArray *errors)
     return g_string_free(s, FALSE);
 }
 
-/* Fires from resolved_ctl's reconnect watch (NM device activation, or the periodic backstop poll —
- * see resolved_ctl.h) on the daemon's main-loop thread. If protection isn't actually live this is
- * a no-op; if it is, re-push the redirect unconditionally rather than trying to first detect
- * whether it actually drifted — SetLinkDNS/SetLinkDomains are idempotent and a few extra D-Bus
- * calls every reconnect/30s is free, so there's no reason to build a "did it actually change"
- * check when "just reapply it" is simpler and can't be wrong. */
+/* Fires from resolved_ctl's reconnect watch (NM device activation, a logind sleep/resume cycle, or
+ * the periodic backstop poll — see resolved_ctl.h) on the daemon's main-loop thread. If protection
+ * isn't actually live this is a no-op; if it is, re-push the redirect unconditionally rather than
+ * trying to first detect whether it actually drifted — SetLinkDNS/SetLinkDomains are idempotent and
+ * a few extra D-Bus calls every reconnect/resume/poll tick is free, so there's no reason to build a
+ * "did it actually change" check when "just reapply it" is simpler and can't be wrong. */
 static void on_possible_link_drift(gpointer user_data)
 {
     ProtectionController *pc = user_data;

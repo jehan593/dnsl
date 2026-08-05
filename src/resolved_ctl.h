@@ -24,18 +24,25 @@ GPtrArray *resolved_ctl_restore_dhcp(void);
  * reconnect after suspend, a WiFi roam/reassociation, a DHCP lease renewal, or a plain
  * `nmcli general reload dns-rc` — any of which silently overwrite our SetLinkDNS override with no
  * signal back to us otherwise (confirmed live: waking from sleep does this every time, and so does
- * a bare `nmcli general reload dns-rc` with no reconnect at all). Two layers, both firing
+ * a bare `nmcli general reload dns-rc` with no reconnect at all). Three layers, all firing
  * `on_reconnect(user_data)` on the caller's GLib main context — the caller decides whether
  * protection is actually live and worth re-asserting:
- *   1. Event-driven: subscribes to NetworkManager's Device StateChanged signal, fires on any
+ *   1. Event-driven (NM): subscribes to NetworkManager's Device StateChanged signal, fires on any
  *      device reaching ACTIVATED. Near-instant recovery for every trigger above.
- *   2. Poll, as a backstop: fires every poll_interval_seconds regardless, so anything that
- *      changes resolved's link config *without* an NM device state transition (some other tool
- *      calling resolved's D-Bus API directly, a future NM behavior change, etc.) still
- *      self-heals within one interval instead of needing a manual toggle forever. Pass 0 to
- *      disable this leg and keep only the event-driven one.
- * Best-effort: if the system bus can't be reached, the event-driven leg is silently skipped (a
- * g_warning is logged) and only the poll leg (if enabled) runs. */
+ *   2. Event-driven (logind): subscribes to login1's PrepareForSleep(b) signal, fires on the
+ *      resume edge (b == FALSE). Lands the instant the kernel resumes, ahead of NM having
+ *      necessarily finished reconnecting — covers links (e.g. wired ethernet) that never drop
+ *      IFF_UP across suspend and so never produce an NM state transition at all, despite
+ *      resolved's link config having reverted underneath us.
+ *   3. Poll, as a backstop: fires every poll_interval_seconds regardless, so anything that
+ *      changes resolved's link config *without* an NM device state transition or a sleep/resume
+ *      cycle (some other tool calling resolved's D-Bus API directly, a future NM behavior change,
+ *      etc.) still self-heals within one interval instead of needing a manual toggle forever.
+ *      Pass 0 to disable this leg and keep only the event-driven ones.
+ * Best-effort: if the system bus can't be reached, both event-driven legs are silently skipped (a
+ * g_warning is logged) and only the poll leg (if enabled) runs. A machine without logind (rare
+ * outside a systemd-resolved system, which dnsl already requires) simply never sees that signal —
+ * no separate opt-out needed. */
 typedef struct ResolvedCtlWatch ResolvedCtlWatch;
 
 ResolvedCtlWatch *resolved_ctl_watch_start(guint poll_interval_seconds,
