@@ -189,9 +189,14 @@ GPtrArray *resolved_ctl_restore_dhcp(void)
  * ABI value, not worth pulling in libnm just for this one constant. */
 #define NM_DEVICE_STATE_ACTIVATED 100u
 
+#define LOGIN1_BUS_NAME "org.freedesktop.login1"
+#define LOGIN1_OBJ_PATH "/org/freedesktop/login1"
+#define LOGIN1_MANAGER_IFACE "org.freedesktop.login1.Manager"
+
 struct ResolvedCtlWatch {
     GDBusConnection *bus; /* NULL if the system bus couldn't be reached at start time */
     guint nm_signal_sub_id;
+    guint logind_signal_sub_id;
     guint poll_source_id;
     void (*on_reconnect)(gpointer user_data);
     gpointer user_data;
@@ -209,6 +214,27 @@ static void on_nm_device_state_changed(GDBusConnection *connection, const gchar 
     g_variant_get(parameters, "(uuu)", &new_state, &old_state, &reason);
     (void)old_state; (void)reason;
     if (new_state != NM_DEVICE_STATE_ACTIVATED) return;
+
+    watch->on_reconnect(watch->user_data);
+}
+
+/* logind's PrepareForSleep(b) fires twice per sleep cycle: TRUE right before the system suspends,
+ * FALSE right after it resumes. Only the resume edge is interesting here — it lands the instant
+ * the kernel is back, ahead of NM having necessarily finished reassociating/renewing a lease, which
+ * is what makes it useful for links (e.g. wired ethernet) that never drop IFF_UP across suspend and
+ * so never generate an NM StateChanged transition at all despite resolved's link config having been
+ * silently reverted underneath us. */
+static void on_logind_prepare_for_sleep(GDBusConnection *connection, const gchar *sender_name,
+                                         const gchar *object_path, const gchar *interface_name,
+                                         const gchar *signal_name, GVariant *parameters,
+                                         gpointer user_data)
+{
+    (void)connection; (void)sender_name; (void)object_path; (void)interface_name; (void)signal_name;
+    ResolvedCtlWatch *watch = user_data;
+
+    gboolean about_to_sleep = FALSE;
+    g_variant_get(parameters, "(b)", &about_to_sleep);
+    if (about_to_sleep) return;
 
     watch->on_reconnect(watch->user_data);
 }
@@ -239,6 +265,9 @@ ResolvedCtlWatch *resolved_ctl_watch_start(guint poll_interval_seconds,
         watch->nm_signal_sub_id = g_dbus_connection_signal_subscribe(
             watch->bus, NM_BUS_NAME, NM_DEVICE_IFACE, "StateChanged", NULL, NULL,
             G_DBUS_SIGNAL_FLAGS_NONE, on_nm_device_state_changed, watch, NULL);
+        watch->logind_signal_sub_id = g_dbus_connection_signal_subscribe(
+            watch->bus, LOGIN1_BUS_NAME, LOGIN1_MANAGER_IFACE, "PrepareForSleep", LOGIN1_OBJ_PATH,
+            NULL, G_DBUS_SIGNAL_FLAGS_NONE, on_logind_prepare_for_sleep, watch, NULL);
     }
 
     if (poll_interval_seconds > 0) {
@@ -254,6 +283,7 @@ void resolved_ctl_watch_stop(ResolvedCtlWatch *watch)
     if (watch->poll_source_id) g_source_remove(watch->poll_source_id);
     if (watch->bus) {
         if (watch->nm_signal_sub_id) g_dbus_connection_signal_unsubscribe(watch->bus, watch->nm_signal_sub_id);
+        if (watch->logind_signal_sub_id) g_dbus_connection_signal_unsubscribe(watch->bus, watch->logind_signal_sub_id);
         g_object_unref(watch->bus);
     }
     g_free(watch);
