@@ -5,16 +5,20 @@
 
 /* Reconnect-watch poll interval: see resolved_ctl.h's resolved_ctl_watch_start doc comment — this
  * is the backstop leg for drift neither event-driven leg catches. Kept short (rather than e.g. 30s)
- * because a reassert is idempotent and cheap (a few D-Bus calls), so there's no real cost to a
- * tight worst-case bound here — this is the fallback for drift with no NM state transition and no
- * sleep/resume cycle, which should be rare, but "rare" isn't "instant" without a short interval. */
-#define RECONNECT_WATCH_POLL_SECONDS 5
+ * because a reassert is idempotent and cheap (a few D-Bus calls + one snapshot refresh), so there's
+ * no real cost to a tight worst-case bound here. The interval is also the upper bound on how long
+ * a just-connected VPN (e.g. Windscribe) can serve queries from its own DNS before dnsl re-asserts
+ * its redirect over it — Android Private DNS has no such window at all, so 2s is the closest the
+ * poll-based backstop can get while staying effectively free. It is this leg (not the event-driven
+ * ones) that catches non-NM VPN clients, which produce no NM StateChanged signal. */
+#define RECONNECT_WATCH_POLL_SECONDS 2
 
 struct ProtectionController {
     GMutex mutex;
     AppSettings *settings;
     DnsProxy *proxy;
     ResolvedCtlWatch *watch;
+    GPtrArray *link_snapshots; /* pre-redirect config of every link we redirected, for exact restore */
 
     ProtectionStateChangedFn on_state_changed;
     ProtectionErrorFn on_error;
@@ -37,6 +41,7 @@ void protection_controller_free(ProtectionController *pc)
 {
     if (!pc) return;
     resolved_ctl_watch_stop(pc->watch);
+    if (pc->link_snapshots) { g_ptr_array_free(pc->link_snapshots, TRUE); pc->link_snapshots = NULL; }
     dns_proxy_free(pc->proxy);
     app_settings_free(pc->settings);
     g_mutex_clear(&pc->mutex);
@@ -106,7 +111,14 @@ static void on_possible_link_drift(gpointer user_data)
     g_mutex_lock(&pc->mutex);
     if (!dns_proxy_is_running(pc->proxy)) { g_mutex_unlock(&pc->mutex); return; }
 
-    GPtrArray *errors = resolved_ctl_redirect_to_local_proxy();
+    /* A link that appeared since the last pass (e.g. a Windscribe tunnel just brought up) must be
+     * snapshotted BEFORE the redirect below clobbers its own DNS, or disabling protection later
+     * can't hand it back to its owner (a non-NM tunnel like Windscribe never re-pushes after a
+     * plain revert). reassert also delays redirecting a brand-new link until its owner has set DNS
+     * on it (the grace window where a premature redirect would hide the owner's config forever),
+     * and re-captures any settled link whose DNS an external owner overwrote back to non-proxy —
+     * that value is what restore must hand back later. */
+    GPtrArray *errors = resolved_ctl_reassert(pc->link_snapshots);
     gchar *link_error = errors->len > 0
         ? join_errors("Protection is on, but re-applying it after a network change failed:\n", errors)
         : NULL;
@@ -136,7 +148,13 @@ void protection_controller_enable(ProtectionController *pc)
         return;
     }
 
-    GPtrArray *errors = resolved_ctl_redirect_to_local_proxy();
+    /* Capture every active link's exact pre-redirect resolved config first, so disable/pause can
+     * restore it verbatim — for tunnel/VPN links, whose original DNS servers no external owner
+     * re-pushes after a plain RevertLink(). reassert (not a bare redirect) so a link that has no
+     * DNS configured yet gets its owner's grace window before being parked on the proxy. */
+    pc->link_snapshots = resolved_ctl_capture_snapshots();
+
+    GPtrArray *errors = resolved_ctl_reassert(pc->link_snapshots);
     gchar *link_error = errors->len > 0
         ? join_errors("Protection is on, but some links couldn't be redirected:\n", errors)
         : NULL;
@@ -158,7 +176,13 @@ static void stop_live(ProtectionController *pc)
 {
     if (!dns_proxy_is_running(pc->proxy)) return;
 
-    GPtrArray *errors = resolved_ctl_restore_dhcp();
+    /* One last reconcile before restoring, so a config an owner pushed onto a link since the
+     * previous poll (e.g. Windscribe setting its DNS the instant its tunnel came up) is handed
+     * back exactly, not replaced by a stale/empty snapshot captured in that race window. */
+    resolved_ctl_refresh_snapshots(pc->link_snapshots);
+
+    GPtrArray *errors = resolved_ctl_restore_dhcp(pc->link_snapshots);
+    if (pc->link_snapshots) { g_ptr_array_free(pc->link_snapshots, TRUE); pc->link_snapshots = NULL; }
     gchar *link_error = errors->len > 0
         ? join_errors("Some links couldn't be restored to automatic DNS:\n", errors)
         : NULL;
