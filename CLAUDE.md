@@ -93,12 +93,46 @@ Every module below is a direct port of the named dnsw file unless noted:
   concurrency). Stopping closes the sockets to unblock each listener thread's blocking `recvfrom()`
   (the same "dispose the socket to unblock the read loop" trick `DnsProxyServer.cs` uses on its
   `UdpClient`).
-- **`resolved_ctl.c`** (`Net/AdapterDnsManager.cs`) — enumerates active (up, non-loopback,
-  non-point-to-point) links via `getifaddrs`, then calls `org.freedesktop.resolve1.Manager`'s
+- **`resolved_ctl.c`** (`Net/AdapterDnsManager.cs`) — enumerates active (up, non-loopback) links
+  via `getifaddrs`, then calls `org.freedesktop.resolve1.Manager`'s
   `SetLinkDNS`/`SetLinkDomains`/`RevertLink` over `GDBusConnection` (system bus). A domain of `"."`
   with `routing_only=TRUE` is resolved's `"~."` marker (same as `resolvectl domain <link> '~.'`) —
   makes the link the resolver of last resort for every name, the direct equivalent of pointing
-  every Windows adapter's DNS at the local proxy.
+  every Windows adapter's DNS at the local proxy. **Point-to-point/tunnel (VPN) links are
+  redirected too, deliberately**: NetworkManager ranks an active VPN's link as the highest-DNS-
+  priority route in resolved (`dns-priority` 50 vs 100; privacy-VPN clients also add their own
+  `"~."`), so a tunnel left with its own resolver would win over the proxy on the physical link —
+  redirecting every link leaves no non-proxy resolver in the whole table. Done via `SetLinkDNS`
+  only; tunnel routes are never touched, so a VPN keeps working while protection is on. On enable
+  (and then continuously, via the reconnect watch) dnsl snapshots each link's exact pre-redirect
+  resolved config — DNS servers, routing/search domains, default-route flag, read via
+  `resolve1 Manager.GetLink` + per-link `Properties.Get` — and on disable/pause restores that
+  snapshot verbatim instead of `RevertLink` alone (RevertLink falls back only for links never
+  snapshotted). The keep-fresh part is `resolved_ctl_refresh_snapshots()`: every poll (and again
+  right before restore) it *re-captures* any link whose current DNS is not dnsl's own redirect —
+  i.e. an external owner just re-asserted itself. That kills two birds with one reconcile: a link
+  that appears after enable (e.g. a Windscribe tunnel brought up mid-protection) — *including one
+  captured in the instant before the VPN finished setting its DNS*, so restoring the empty capture
+  isn't possible — and a link whose owner pushed DNS again after our redirect (Windscribe
+  re-applying, NM re-pushing post-DHCP), so the freshest external value is what gets handed back on
+  disable. This is what makes the "instant revert to normal DNS" hold for non-NetworkManager
+  tunnels too: the physical link's DHCP DNS is re-pushed by NM, but a Windscribe/wg-quick tunnel's
+  own resolver is restored from the snapshot because nothing else would re-apply it.
+  
+  **dnsl never stores its own redirect as a link's "original".** A link whose live DNS is already
+  our `{127.0.0.1, ::1}` redirect at any capture site is a leftover of a *previous* protection
+  session (e.g. the daemon was hard-killed while parked, then restarted and resumed), not anyone's
+  genuine pre-protection config — recording `is_proxy_redirect_dns(dns)` would make disable write
+  the now-dead local proxy back as the link's DNS (a SERVFAIL outage, not a restore). Such links
+  are therefore never snapshotted (capture sites skip them; a brand-new parked link is captured
+  empty and left unsettled through its grace window in case a real owner appears); `restore_dhcp`
+  additionally refuses — as defense in depth — to write any snapshot whose stored DNS is our
+  redirect, falling back to `RevertLink` + the NM nudge for those exact same as never-snapshotted
+  links. The one accepted trade-off: a tunnel that was *already parked* when the daemon (re)started
+  loses its pre-protection resolver for that session — restoring it is fundamentally impossible
+  since by then the only remaining state is the redirect — and the link sits unmanaged-by-DNS until
+  its owner's next re-push (a Windscribe reconnect reliably does this), while NM-managed links are
+  healed by the NM nudge.
 - **`dns_provider.c`** (`Data/DnsProvider.cs`) — built-in Cloudflare/Quad9/Mullvad + custom +
   NextDNS-template providers, `custom:<uuid>` ids via `libuuid`.
 - **`settings_store.c`** (`Data/AppSettings.cs` + `Data/SettingsStore.cs`) — flat JSON at
