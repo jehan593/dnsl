@@ -129,8 +129,7 @@ static gpointer client_thread(gpointer data)
     g_ptr_array_add(server->clients, client);
     guint count = server->clients->len;
     g_mutex_unlock(&server->clients_mutex);
-    /* First client to connect (tray launching, by any means) re-applies protection if that's what
-     * the user last chose — see protection_controller_resume_if_desired. */
+    /* First client connects → resume protection if it was on. */
     if (count == 1) protection_controller_resume_if_desired(server->controller);
 
     send_status(server, client, NULL); /* greet with current status */
@@ -153,8 +152,7 @@ static gpointer client_thread(gpointer data)
     g_ptr_array_remove_fast(server->clients, client);
     guint remaining = server->clients->len;
     g_mutex_unlock(&server->clients_mutex);
-    /* Last client disconnecting (tray closed, crashed, or a log-off) pauses live protection
-     * without forgetting the preference — the counterpart to the resume above. */
+    /* Last client disconnects → pause protection (preserves preference). */
     if (remaining == 0) protection_controller_pause(server->controller);
 
     fclose(client->read_f);
@@ -174,12 +172,8 @@ static gpointer accept_loop(gpointer data)
             return NULL; /* listen socket closed by ipc_server_stop, or a real error */
         }
 
-        /* Separate FILE* per direction — see the ClientConn doc comment and remote_controller.c's
-         * matching fix for why a single shared fdopen(fd, "r+") deadlocks: this thread's own
-         * getline() below sits inside glibc's per-stream lock for the whole time it's blocked
-         * waiting for the client's next command, so any *other* thread's fprintf() to a shared
-         * FILE* (e.g. a broadcast triggered by a different client's command) would block on that
-         * same lock forever. */
+    /* Separate FILE* per direction — a single shared fdopen(fd, "r+") deadlocks because
+     * getline() holds glibc's per-stream lock while blocked. */
         int write_fd = dup(fd);
         FILE *rf = fdopen(fd, "r");
         FILE *wf = write_fd >= 0 ? fdopen(write_fd, "w") : NULL;
@@ -237,8 +231,7 @@ gboolean ipc_server_start(IpcServer *server, GError **error)
         close(fd);
         return FALSE;
     }
-    /* World-connectable: this isn't a real privilege boundary (any local user redirecting their
-     * own already-root-controlled machine's DNS isn't an escalation), so no group/ACL dance. */
+    /* World-connectable — not a real privilege boundary. */
     chmod(DNSL_SOCKET_PATH, 0666);
 
     if (listen(fd, 16) != 0) {
@@ -264,9 +257,7 @@ void ipc_server_stop(IpcServer *server)
     server->listen_fd = -1;
     if (server->accept_thread) { g_thread_join(server->accept_thread); server->accept_thread = NULL; }
 
-    /* Best-effort: nudge every still-connected client's blocking getline() to return so its
-     * thread notices and cleans itself up promptly (the process is about to exit regardless, so
-     * these aren't joined — see daemon.c's shutdown sequence). */
+    /* Best-effort: nudge every client's getline() to return so threads clean up. */
     g_mutex_lock(&server->clients_mutex);
     for (guint i = 0; i < server->clients->len; i++) {
         ClientConn *client = g_ptr_array_index(server->clients, i);

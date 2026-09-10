@@ -3,14 +3,8 @@
 #include "dns_proxy.h"
 #include "resolved_ctl.h"
 
-/* Reconnect-watch poll interval: see resolved_ctl.h's resolved_ctl_watch_start doc comment — this
- * is the backstop leg for drift neither event-driven leg catches. Kept short (rather than e.g. 30s)
- * because a reassert is idempotent and cheap (a few D-Bus calls + one snapshot refresh), so there's
- * no real cost to a tight worst-case bound here. The interval is also the upper bound on how long
- * a just-connected VPN (e.g. Windscribe) can serve queries from its own DNS before dnsl re-asserts
- * its redirect over it — Android Private DNS has no such window at all, so 2s is the closest the
- * poll-based backstop can get while staying effectively free. It is this leg (not the event-driven
- * ones) that catches non-NM VPN clients, which produce no NM StateChanged signal. */
+/* Reconnect-watch poll interval — backstop for drift missed by event-driven legs. 2s is the
+ * upper bound on how long a just-connected VPN can use its own DNS before dnsl re-asserts. */
 #define RECONNECT_WATCH_POLL_SECONDS 2
 
 struct ProtectionController {
@@ -99,25 +93,16 @@ static gchar *join_errors(const gchar *prefix, GPtrArray *errors)
     return g_string_free(s, FALSE);
 }
 
-/* Fires from resolved_ctl's reconnect watch (NM device activation, a logind sleep/resume cycle, or
- * the periodic backstop poll — see resolved_ctl.h) on the daemon's main-loop thread. If protection
- * isn't actually live this is a no-op; if it is, re-push the redirect unconditionally rather than
- * trying to first detect whether it actually drifted — SetLinkDNS/SetLinkDomains are idempotent and
- * a few extra D-Bus calls every reconnect/resume/poll tick is free, so there's no reason to build a
- * "did it actually change" check when "just reapply it" is simpler and can't be wrong. */
+/* Fires from the reconnect watch. If protection is live, re-push the redirect unconditionally —
+ * SetLinkDNS/SetLinkDomains are idempotent and cheap. */
 static void on_possible_link_drift(gpointer user_data)
 {
     ProtectionController *pc = user_data;
     g_mutex_lock(&pc->mutex);
     if (!dns_proxy_is_running(pc->proxy)) { g_mutex_unlock(&pc->mutex); return; }
 
-    /* A link that appeared since the last pass (e.g. a Windscribe tunnel just brought up) must be
-     * snapshotted BEFORE the redirect below clobbers its own DNS, or disabling protection later
-     * can't hand it back to its owner (a non-NM tunnel like Windscribe never re-pushes after a
-     * plain revert). reassert also delays redirecting a brand-new link until its owner has set DNS
-     * on it (the grace window where a premature redirect would hide the owner's config forever),
-     * and re-captures any settled link whose DNS an external owner overwrote back to non-proxy —
-     * that value is what restore must hand back later. */
+    /* Snapshot links BEFORE redirecting, so disable can restore them. reassert delays
+     * redirecting new links until their owner has set DNS (grace window). */
     GPtrArray *errors = resolved_ctl_reassert(pc->link_snapshots);
     gchar *link_error = errors->len > 0
         ? join_errors("Protection is on, but re-applying it after a network change failed:\n", errors)
@@ -127,9 +112,7 @@ static void on_possible_link_drift(gpointer user_data)
     if (link_error) { fire_error(pc, link_error); g_free(link_error); }
 }
 
-/* Starts the proxy against the currently-selected provider and redirects every active link to it.
- * Links are only ever redirected once the proxy is confirmed listening, so a failed enable never
- * leaves the system pointed at a dead resolver. */
+/* Starts proxy and redirects all links. Failed enable never leaves the system on a dead resolver. */
 void protection_controller_enable(ProtectionController *pc)
 {
     g_mutex_lock(&pc->mutex);
@@ -148,10 +131,8 @@ void protection_controller_enable(ProtectionController *pc)
         return;
     }
 
-    /* Capture every active link's exact pre-redirect resolved config first, so disable/pause can
-     * restore it verbatim — for tunnel/VPN links, whose original DNS servers no external owner
-     * re-pushes after a plain RevertLink(). reassert (not a bare redirect) so a link that has no
-     * DNS configured yet gets its owner's grace window before being parked on the proxy. */
+    /* Capture pre-redirect config for exact restore on disable. reassert delays new links
+     * through their owner's DNS grace window. */
     pc->link_snapshots = resolved_ctl_capture_snapshots();
 
     GPtrArray *errors = resolved_ctl_reassert(pc->link_snapshots);
@@ -169,16 +150,13 @@ void protection_controller_enable(ProtectionController *pc)
     if (link_error) { fire_error(pc, link_error); g_free(link_error); }
 }
 
-/* Restores every active link to systemd-resolved's automatic DNS, then stops the proxy —
- * deliberately in that order, so there's never a window where a link still points at 127.0.0.1
- * after the proxy listening there has already gone away. */
+/* Restores links to automatic DNS, then stops the proxy — in that order, so there's never
+ * a window where a link still points at 127.0.0.1 after the proxy is gone. */
 static void stop_live(ProtectionController *pc)
 {
     if (!dns_proxy_is_running(pc->proxy)) return;
 
-    /* One last reconcile before restoring, so a config an owner pushed onto a link since the
-     * previous poll (e.g. Windscribe setting its DNS the instant its tunnel came up) is handed
-     * back exactly, not replaced by a stale/empty snapshot captured in that race window. */
+    /* One last reconcile so fresh owner configs are restored exactly. */
     resolved_ctl_refresh_snapshots(pc->link_snapshots);
 
     GPtrArray *errors = resolved_ctl_restore_dhcp(pc->link_snapshots);
@@ -244,8 +222,7 @@ void protection_controller_add_custom_provider(ProtectionController *pc, DnsProv
     fire_state_changed(pc);
 }
 
-/* Deleting the currently-selected provider falls back to Cloudflare — silently switching upstream
- * mid-session rather than leaving Settings pointed at an id that no longer resolves to anything. */
+/* Deleting the selected provider falls back to Cloudflare. */
 void protection_controller_remove_custom_provider(ProtectionController *pc, const gchar *provider_id)
 {
     g_mutex_lock(&pc->mutex);

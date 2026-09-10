@@ -130,7 +130,7 @@ void providers_window_refresh(GtkWidget *window)
     gboolean connected = remote_controller_is_connected(data->remote);
 
     if (!connected || !status) {
-        gtk_label_set_text(GTK_LABEL(data->status_label), "Background service not connected — see the tray menu to install/start it.");
+        gtk_label_set_text(GTK_LABEL(data->status_label), "Service not running — use the tray menu to install it.");
         gtk_button_set_label(GTK_BUTTON(data->toggle_button), "Enable");
         gtk_widget_set_sensitive(data->toggle_button, FALSE);
         gtk_container_foreach(GTK_CONTAINER(data->list_box), destroy_widget_cb, NULL);
@@ -147,7 +147,7 @@ void providers_window_refresh(GtkWidget *window)
 
     gchar *status_text = status->enabled
         ? g_strdup_printf("Protected via %s", current ? current->name : "?")
-        : g_strdup("Not protected — DNS is on automatic defaults");
+        : g_strdup("Not protected — using default DNS");
     gtk_label_set_text(GTK_LABEL(data->status_label), status_text);
     g_free(status_text);
     gtk_button_set_label(GTK_BUTTON(data->toggle_button), status->enabled ? "Disable" : "Enable");
@@ -175,8 +175,8 @@ GtkWidget *providers_window_new(GtkWindow *transient_parent, RemoteController *r
                                  ProvidersWindowAutostartChangedFn on_autostart_changed, gpointer user_data)
 {
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "dnsl — DNS Providers");
-    gtk_window_set_default_size(GTK_WINDOW(window), 420, 520);
+    gtk_window_set_title(GTK_WINDOW(window), "dnsl — Providers");
+    gtk_window_set_default_size(GTK_WINDOW(window), 520, 620);
     if (transient_parent) gtk_window_set_transient_for(GTK_WINDOW(window), transient_parent);
 
     ProvidersWindowData *data = g_new0(ProvidersWindowData, 1);

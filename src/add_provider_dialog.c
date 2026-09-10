@@ -18,12 +18,7 @@ static GtkWidget *labeled_field(GtkWidget *box, const gchar *label_text, GtkWidg
     return field;
 }
 
-/* GtkDialog's action area (holding Cancel/Add) is a separate widget from the content area, a
- * sibling in the dialog's own outer box — the "content-pad-20" class applied to our own content
- * box has no effect on it at all, which is why the buttons sat flush against the window's own
- * edges. gtk_container_set_border_width() is a documented no-op for child layout on this GTK
- * build (see ../linker-linux/CLAUDE.md), so margin on the action area widget itself (offsets a
- * widget relative to its own parent — exactly what's needed here) is the fix, not padding. */
+/* GtkDialog's action area is a separate widget — padding on it, not on our content box. */
 static void pad_dialog_action_area(GtkDialog *dialog)
 {
     GtkWidget *action_area = gtk_dialog_get_action_area(dialog);
@@ -33,13 +28,8 @@ static void pad_dialog_action_area(GtkDialog *dialog)
     gtk_widget_set_margin_bottom(action_area, 16);
 }
 
-/* gtk_entry_get_text() returns a pointer straight into the GtkEntry's own internal
- * GtkEntryBuffer — const-qualified specifically because callers must not mutate it. g_strstrip()
- * mutates its argument in place (shifts bytes left, writes a '\0' mid-buffer), which desyncs the
- * buffer's real content from the length GtkEntryBuffer separately tracks for it. Confirmed by
- * hand: calling g_strstrip() directly on gtk_entry_get_text()'s return value (as this code
- * originally did in five places) crashed the app on submitting the "Add NextDNS" dialog. Always
- * copy first — g_strdup() then g_strstrip() the owned copy, never the widget's own buffer. */
+/* Don't call g_strstrip() on gtk_entry_get_text()'s return — it points into the GtkEntry's
+ * internal buffer. Always copy first. */
 static gchar *entry_text_stripped(GtkEntry *entry)
 {
     gchar *copy = g_strdup(gtk_entry_get_text(entry));
@@ -49,7 +39,7 @@ static gchar *entry_text_stripped(GtkEntry *entry)
 
 DnsProvider *add_provider_dialog_run_custom(GtkWindow *parent)
 {
-    GtkWidget *dialog = gtk_dialog_new_with_buttons("Add Custom Provider", parent,
+    GtkWidget *dialog = gtk_dialog_new_with_buttons("Add Custom DNS", parent,
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, NULL, NULL);
     gtk_window_set_default_size(GTK_WINDOW(dialog), 380, -1);
 
@@ -66,8 +56,8 @@ DnsProvider *add_provider_dialog_run_custom(GtkWindow *parent)
     gtk_container_add(GTK_CONTAINER(content), box);
 
     GtkWidget *name_entry = labeled_field(box, "Name", ui_outlined_entry_new());
-    GtkWidget *host_entry = labeled_field(box, "TLS hostname (SNI)", ui_outlined_entry_new());
-    GtkWidget *ips_entry = labeled_field(box, "IPs (comma-separated)", ui_outlined_entry_new());
+    GtkWidget *host_entry = labeled_field(box, "TLS hostname", ui_outlined_entry_new());
+    GtkWidget *ips_entry = labeled_field(box, "IP addresses (comma-separated)", ui_outlined_entry_new());
     GtkWidget *port_entry = labeled_field(box, "Port", ui_outlined_entry_new());
     gtk_entry_set_text(GTK_ENTRY(port_entry), "853");
 
@@ -89,12 +79,12 @@ DnsProvider *add_provider_dialog_run_custom(GtkWindow *parent)
         gchar *port_raw = entry_text_stripped(GTK_ENTRY(port_entry));
 
         if (!*name) {
-            gtk_label_set_text(GTK_LABEL(error_label), "Give it a name first");
+            gtk_label_set_text(GTK_LABEL(error_label), "Enter a name");
             g_free(name); g_free(host); g_free(ips_raw); g_free(port_raw);
             continue;
         }
         if (!*host) {
-            gtk_label_set_text(GTK_LABEL(error_label), "Enter the resolver's TLS hostname");
+            gtk_label_set_text(GTK_LABEL(error_label), "Enter the TLS hostname");
             g_free(name); g_free(host); g_free(ips_raw); g_free(port_raw);
             continue;
         }
@@ -107,7 +97,7 @@ DnsProvider *add_provider_dialog_run_custom(GtkWindow *parent)
             if (*trimmed && looks_like_ip(trimmed)) g_ptr_array_add(ips, trimmed);
         }
         if (ips->len == 0) {
-            gtk_label_set_text(GTK_LABEL(error_label), "Enter at least one valid IP address");
+            gtk_label_set_text(GTK_LABEL(error_label), "Enter at least one valid IP");
             g_ptr_array_free(ips, TRUE);
             g_strfreev(parts);
             g_free(name); g_free(host); g_free(port_raw);
@@ -117,7 +107,7 @@ DnsProvider *add_provider_dialog_run_custom(GtkWindow *parent)
         gchar *end = NULL;
         long port = strtol(port_raw, &end, 10);
         if (*port_raw == '\0' || (end && *end != '\0') || port <= 0 || port > 65535) {
-            gtk_label_set_text(GTK_LABEL(error_label), "Port must be a number between 1 and 65535");
+            gtk_label_set_text(GTK_LABEL(error_label), "Port must be 1–65535");
             g_ptr_array_free(ips, TRUE);
             g_strfreev(parts);
             g_free(name); g_free(host); g_free(port_raw);
@@ -153,7 +143,7 @@ DnsProvider *add_provider_dialog_run_nextdns(GtkWindow *parent)
     gtk_style_context_add_class(gtk_widget_get_style_context(box), "content-pad-20");
     gtk_container_add(GTK_CONTAINER(content), box);
 
-    GtkWidget *config_entry = labeled_field(box, "NextDNS config id", ui_outlined_entry_new());
+    GtkWidget *config_entry = labeled_field(box, "Config ID", ui_outlined_entry_new());
     GtkWidget *name_entry = labeled_field(box, "Custom name (optional)", ui_outlined_entry_new());
 
     GtkWidget *error_label = ui_body_small_label_new("");
@@ -170,7 +160,7 @@ DnsProvider *add_provider_dialog_run_nextdns(GtkWindow *parent)
 
         gchar *config_id = entry_text_stripped(GTK_ENTRY(config_entry));
         if (!*config_id) {
-            gtk_label_set_text(GTK_LABEL(error_label), "Enter your NextDNS config id first");
+            gtk_label_set_text(GTK_LABEL(error_label), "Enter your NextDNS config ID");
             g_free(config_id);
             continue;
         }

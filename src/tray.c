@@ -71,8 +71,7 @@ static void on_autostart_toggled(GtkCheckMenuItem *item, gpointer user_data)
 {
     TrayController *tc = user_data;
     autostart_set_enabled(gtk_check_menu_item_get_active(item));
-    /* "Start with this session" is a purely local file toggle, not a daemon round-trip — nothing
-     * else would otherwise tell the providers window (if open) to pick up the new state. */
+    /* Autostart is a local file toggle — nothing else tells the providers window to sync. */
     if (tc->providers_window) providers_window_refresh(tc->providers_window);
 }
 
@@ -80,7 +79,7 @@ static gboolean idle_install_failed(gpointer user_data)
 {
     TrayController *tc = user_data;
     g_free(tc->pending_error);
-    tc->pending_error = g_strdup("Couldn't install/start the background service.");
+    tc->pending_error = g_strdup("Failed to install the background service.");
     rebuild_menu(tc);
     return G_SOURCE_REMOVE;
 }
@@ -92,8 +91,7 @@ static gpointer install_thread(gpointer user_data)
     if (result == INSTALLER_FAILED) {
         g_idle_add(idle_install_failed, tc);
     }
-    /* On success (or user cancellation), RemoteController's own reconnect loop notices the
-     * now-running daemon and fires the state-changed callback on its own — nothing else to do. */
+    /* On success, RemoteController's reconnect loop picks up the daemon automatically. */
     return NULL;
 }
 
@@ -108,8 +106,7 @@ static void on_exit_clicked(GtkMenuItem *item, gpointer user_data)
 {
     (void)item;
     TrayController *tc = user_data;
-    /* Exit only closes the tray — deliberately does not touch protection state, which lives in
-     * the daemon independent of whether the tray happens to be open. */
+    /* Exit only closes the tray — daemon keeps running independently. */
     app_indicator_set_status(tc->indicator, APP_INDICATOR_STATUS_PASSIVE);
     g_application_quit(G_APPLICATION(tc->app));
 }
@@ -129,10 +126,10 @@ static void append_separator(GtkWidget *menu)
 
 static void rebuild_disconnected(TrayController *tc, GtkWidget *menu)
 {
-    append_item(menu, "Background service not connected", FALSE);
+    append_item(menu, "Service not running", FALSE);
     append_separator(menu);
 
-    GtkWidget *install_item = gtk_menu_item_new_with_label("Install / start background service…");
+    GtkWidget *install_item = gtk_menu_item_new_with_label("Install background service…");
     g_signal_connect(install_item, "activate", G_CALLBACK(on_install_clicked), tc);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), install_item);
     append_separator(menu);
@@ -144,7 +141,7 @@ static void rebuild_disconnected(TrayController *tc, GtkWidget *menu)
     gchar *icon = g_strdup_printf("dnsl-disabled-48");
     app_indicator_set_icon_full(tc->indicator, icon, "dnsl");
     g_free(icon);
-    app_indicator_set_title(tc->indicator, "dnsl — background service not connected");
+    app_indicator_set_title(tc->indicator, "dnsl — service not running");
 }
 
 static void rebuild_connected(TrayController *tc, GtkWidget *menu, IpcStatus *status)
@@ -164,7 +161,7 @@ static void rebuild_connected(TrayController *tc, GtkWidget *menu, IpcStatus *st
     append_item(menu, status_text, FALSE);
     append_separator(menu);
 
-    GtkWidget *toggle_item = gtk_menu_item_new_with_label(status->enabled ? "Disable protection" : "Enable protection");
+    GtkWidget *toggle_item = gtk_menu_item_new_with_label(status->enabled ? "Turn off" : "Turn on");
     g_signal_connect(toggle_item, "activate", G_CALLBACK(on_toggle_clicked), tc);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), toggle_item);
 
@@ -242,9 +239,7 @@ static void on_providers_window_destroyed(GtkWidget *window, gpointer user_data)
 
 static void on_providers_window_autostart_changed(gpointer user_data)
 {
-    /* Mirror of tray.c's own on_autostart_toggled, in the other direction: the providers window's
-     * checkbox is a purely local file toggle too, so nothing else would tell the tray menu's own
-     * copy of this checkbox to catch up otherwise. */
+    /* Mirror of tray's on_autostart_toggled — the checkbox is local, so rebuild the menu. */
     rebuild_menu((TrayController *)user_data);
 }
 

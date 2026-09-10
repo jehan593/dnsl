@@ -1,15 +1,4 @@
-/* Port of dnsw's Program.cs: one binary, three roles, chosen by the first argument(s) — see
- * CLAUDE.md "Process model".
- *   --daemon                         the privileged half, launched by systemd (or by hand for
- *                                     debugging); never touches GTK/the tray at all.
- *   --install-service /
- *   --start-service                   the one-shot elevated helper installer.c relaunches itself
- *                                     as via pkexec; runs systemctl, then exits immediately.
- *   (no args) / --autostart           the normal, unprivileged tray client. GtkApplication's
- *                                     default (unique-per-bus-name) mode enforces single-instance
- *                                     the same way dnsw's named Mutex does — a second launch just
- *                                     re-activates the first instance's tray.
- */
+/* One binary, three roles: --daemon, --install-service/--start-service, or tray (no args). */
 #include <gtk/gtk.h>
 #include <string.h>
 
@@ -32,8 +21,7 @@ static void activate(GtkApplication *app, gpointer user_data)
     AppContext *ctx = user_data;
 
     if (ctx->tc) {
-        /* A second launch while already running — GApplication re-delivers "activate" to this
-         * same process instead of starting a new one. */
+        /* A second launch re-activates the first instance. */
         tray_controller_show_providers_window(ctx->tc);
         return;
     }
@@ -49,8 +37,7 @@ static void activate(GtkApplication *app, gpointer user_data)
 
     if (!ctx->autostart) tray_controller_show_providers_window(ctx->tc);
 
-    /* This is a tray-only app with no GApplication-tracked window — hold it open so it doesn't
-     * quit the moment the (untracked) providers window closes. */
+    /* Tray-only app — hold open so it doesn't quit when the untracked window closes. */
     g_application_hold(G_APPLICATION(app));
 }
 
@@ -76,8 +63,7 @@ int main(int argc, char **argv)
     GtkApplication *app = gtk_application_new(DNSL_APP_ID, G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app, "activate", G_CALLBACK(activate), &ctx);
 
-    /* Deliberately run with just argv[0] — we've already parsed our own flags above and
-     * GApplication has no reason to see or reinterpret them. */
+    /* Run with just argv[0] — flags already parsed above. */
     int status = g_application_run(G_APPLICATION(app), 1, argv);
 
     if (ctx.tc) tray_controller_free(ctx.tc);
