@@ -64,8 +64,8 @@ DnsProvider *dns_provider_new_nextdns(const gchar *config_id)
     return p;
 }
 
-static DnsProvider *g_cloudflare, *g_quad9, *g_mullvad;
-static const DnsProvider *g_builtins[4];
+static DnsProvider *g_cloudflare, *g_quad9;
+static const DnsProvider *g_builtins[3];
 static gsize g_builtins_init = 0;
 
 static void ensure_builtins(void)
@@ -73,16 +73,13 @@ static void ensure_builtins(void)
     if (g_once_init_enter(&g_builtins_init)) {
         const gchar *cf_ips[] = { "1.1.1.1", "1.0.0.1" };
         const gchar *q9_ips[] = { "9.9.9.9", "149.112.112.112" };
-        const gchar *mv_ips[] = { "194.242.2.2", "194.242.2.3" };
 
         g_cloudflare = dns_provider_new("cloudflare", "Cloudflare", "cloudflare-dns.com", cf_ips, 2, 853, FALSE);
         g_quad9 = dns_provider_new("quad9", "Quad9", "dns.quad9.net", q9_ips, 2, 853, FALSE);
-        g_mullvad = dns_provider_new("mullvad", "Mullvad", "dns.mullvad.net", mv_ips, 2, 853, FALSE);
 
         g_builtins[0] = g_cloudflare;
         g_builtins[1] = g_quad9;
-        g_builtins[2] = g_mullvad;
-        g_builtins[3] = NULL;
+        g_builtins[2] = NULL;
 
         g_once_init_leave(&g_builtins_init, 1);
     }
@@ -90,5 +87,4 @@ static void ensure_builtins(void)
 
 const DnsProvider *dns_provider_builtin_cloudflare(void) { ensure_builtins(); return g_cloudflare; }
 const DnsProvider *dns_provider_builtin_quad9(void) { ensure_builtins(); return g_quad9; }
-const DnsProvider *dns_provider_builtin_mullvad(void) { ensure_builtins(); return g_mullvad; }
 const DnsProvider *const *dns_provider_builtins(void) { ensure_builtins(); return g_builtins; }

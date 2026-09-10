@@ -16,11 +16,7 @@ typedef struct {
     gchar name[IF_NAMESIZE];
 } ActiveLink;
 
-/* A link's systemd-resolved config as it existed *before* dnsl redirected it, so restore can put
- * it back exactly instead of relying on the link's owner (NetworkManager, a VPN client, ...) to
- * re-push — which is exactly what a non-NM-managed tunnel (e.g. Windscribe/wg-quick) never does after a
- * plain RevertLink(), leaving the link with no DNS at all and breaking resolution until something
- * (dnsl) re-adds a resolver or the VPN reconnects. */
+/* A link's pre-redirect config, restored verbatim on disable. */
 struct LinkConfigSnapshot {
     gint ifindex;
     GVariant *dns;        /* a(iay): the link's real DNS servers, e.g. Windscribe's tunnel DNS */
@@ -30,13 +26,8 @@ struct LinkConfigSnapshot {
     gboolean settled;      /* a real owner config was captured (non-empty DNS), or grace expired */
 };
 
-/* How long a brand-new link is left alone (NOT redirected) so its owner can configure DNS on it
- * first. VPN clients bring the interface up and only push DNS a moment later — Windscribe is
- * reliably a few seconds — and if that window is missed the only chance to learn the owner's true
- * resolver is gone (afterwards the link always shows our redirect, so nothing external to catch is
- * ever visible again). 6s is comfortably past Windscribe's DNS-set delay while keeping the "queries
- * stay on the proxy" guarantee to within a few seconds for the new link (during the grace window it
- * resolves via its own freshly-set DNS, which is the same behavior as before the link existed). */
+/* Grace period for new links — VPN clients need a few seconds to push DNS after bringing
+ * the interface up. 6s covers Windscribe's typical delay. */
 #define NEW_LINK_GRACE_MS 6000
 #define NEW_LINK_GRACE_USEC (NEW_LINK_GRACE_MS * 1000)
 
@@ -45,17 +36,9 @@ static gboolean dns_is_empty(GVariant *dns)
     return dns == NULL || g_variant_n_children(dns) == 0;
 }
 
-/* Every up, non-loopback link — point-to-point/tunnel (VPN) interfaces included. Tunnel links
- * MUST be redirected too, or the whole effort is wasted while a VPN is up: NetworkManager ranks
- * an active VPN's link as the highest-precedence DNS route in systemd-resolved (dns-priority
- * defaults to 50 for VPN connections vs 100 for others, and privacy-VPN clients like wg-quick add
- * their own "~." default route to the tunnel link), so a tun/wg link left with its own real DNS
- * server either wins the routing tie or — when both links carry "~." — is queried in parallel and
- * answers first, silently capturing queries away from the proxy we put on the physical link.
- * Redirecting *every* link leaves no non-proxy resolver in resolved's whole table, so precedence
- * is moot: whichever link wins (or both are queried in parallel), the actual DNS server is our
- * local proxy. Only the link's DNS config is touched, never its routes, so a VPN's tunnel keeps
- * working unchanged while protection is on. */
+/* All up, non-loopback links — including VPN tunnels. Tunnels must be redirected too, or a VPN's
+ * higher-priority DNS wins over the proxy on the physical link. Only DNS config is touched,
+ * never routes. */
 static GArray *get_active_links(void)
 {
     GArray *result = g_array_new(FALSE, FALSE, sizeof(ActiveLink));
@@ -81,25 +64,8 @@ static GArray *get_active_links(void)
     return result;
 }
 
-/* Nudge for NetworkManager-managed links: RevertLink() only clears *our* override in
- * systemd-resolved back to "unset" — it does NOT make NetworkManager re-push the link's real
- * DHCP-learned DNS servers afterward. Confirmed by hand on a live system: without this, a link
- * stayed with no DNS scope at all post-revert (`resolvectl status` showed no "DNS" scope even
- * though `nmcli device show` still correctly knew the router's real DNS the whole time), so
- * ordinary resolution silently fell back to the *global* resolver config instead of actually
- * returning to this link's real DHCP DNS — a real gap in "instant, reliable way back to normal
- * DNS", not just a cosmetic status difference.
- *
- * `nmcli device reapply` was tried first and does NOT fix this (confirmed by hand: exits 0, does
- * nothing to resolved's per-link state) — NM only reapplies IP/DNS config when it thinks the
- * connection's config actually changed, which from its point of view it hasn't. What does work,
- * also confirmed by hand: `nmcli general reload dns-rc` ("Update DNS configuration" — the
- * documented equivalent of sending NetworkManager SIGUSR1), which unconditionally makes NM
- * re-push its DNS state everywhere it manages it, including back into systemd-resolved, with no
- * connection interruption. It's a *general* NM-wide operation, not per-link, so it only needs
- * calling once per restore_dhcp() batch, not once per link. Requires root — normal users get
- * `org.freedesktop.NetworkManager.PermissionDenied` — which is fine since this only ever runs
- * inside the (root) daemon. Best-effort: silently skipped on non-NetworkManager systems. */
+/* NM doesn't re-push DNS after RevertLink(). `nmcli general reload dns-rc` unconditionally
+ * re-pushes NM's DNS state everywhere. Runs once per restore batch, not per-link. */
 static void nudge_network_manager_dns_reload(void)
 {
     if (!g_find_program_in_path("nmcli")) return;
@@ -166,9 +132,7 @@ static gboolean call_revert_link(GDBusConnection *bus, gint ifindex, GError **er
     return result != NULL;
 }
 
-/* Value-based variants of the above: SetLinkDNS/SetLinkDomains with a caller-supplied config
- * (used to put a captured snapshot back), as opposed to resolved_ctl_redirect_to_local_proxy()'s
- * hard-coded proxy addresses. */
+/* Value-based SetLinkDNS/SetLinkDomains with caller-supplied config (for restoring snapshots). */
 static gboolean call_set_link_dns_values(GDBusConnection *bus, gint ifindex, GVariant *dns, GError **error)
 {
     GVariant *result = g_dbus_connection_call_sync(bus, RESOLVE1_BUS_NAME, RESOLVE1_OBJ_PATH, RESOLVE1_INTERFACE,
@@ -196,10 +160,7 @@ static gboolean call_set_link_default_route(GDBusConnection *bus, gint ifindex, 
     return result != NULL;
 }
 
-/* resolve1's Manager.GetLink(ifindex) returns the link's object path; its per-link properties
- * (DNS, Domains, DefaultRoute on the org.freedesktop.resolve1.Link interface) are read through
- * the generic org.freedesktop.DBus.Properties.Get — there is no Manager-level "read a link's
- * current DNS" shortcut. */
+/* GetLink returns the link's object path; DNS/Domains/DefaultRoute are read via Properties.Get. */
 static gchar *get_link_object_path(GDBusConnection *bus, gint ifindex)
 {
     GError *error = NULL;
@@ -256,11 +217,7 @@ static gboolean read_link_config(GDBusConnection *bus, gint ifindex,
     return TRUE;
 }
 
-/* TRUE when the link's DNS list is exactly our own redirect ({127.0.0.1, ::1}). Anything else —
- * the owner's real config, a VPN client (e.g. Windscribe) pushing its DNS onto its tunnel after we
- * redirected it, DHCP re-assigning — means an external owner currently owns this link, and that
- * config is what the snapshot must reflect so restore puts it back verbatim. The interface-index
- * field of each a(iay) entry is ignored (resolvectl-family callers use 0; exact bytes decide). */
+/* TRUE when DNS is exactly {127.0.0.1, ::1} — our own redirect, not anyone's real config. */
 static gboolean is_proxy_redirect_dns(GVariant *dns)
 {
     if (!dns || !g_variant_is_of_type(dns, G_VARIANT_TYPE("a(iay)"))) return FALSE;
@@ -323,10 +280,7 @@ GPtrArray *resolved_ctl_capture_snapshots(void)
         GVariant *dns = NULL, *domains = NULL;
         gboolean default_route = FALSE;
         if (!read_link_config(bus, ifindex, &dns, &domains, &default_route)) continue;
-        /* A link whose live DNS is already our own redirect is a leftover of a *previous*
-         * protection session, not anyone's genuine pre-protection config. Never store it as the
-         * link's "original" — restore of such a snapshot would point the link at the (dead) local
-         * proxy. Skip the snapshot entirely: restore then falls back to RevertLink + NM nudge. */
+/* A link whose live DNS is our redirect is leftover from a previous session — skip it. */
         if (is_proxy_redirect_dns(dns)) {
             g_variant_unref(dns);
             g_variant_unref(domains);
@@ -349,20 +303,9 @@ static LinkConfigSnapshot *find_snapshot(GPtrArray *snapshots, gint ifindex)
     return NULL;
 }
 
-/* Brings an existing snapshot array up to date with the live resolved state of every active link:
- *   - a link with no snapshot yet (e.g. a VPN tunnel that came up while protection was already
- *     live) is captured from its current config, which may legitimately still be empty at that
- *     instant — Windscribe and friends take a moment to push DNS after bringing the interface up;
- *   - a link whose current DNS is NOT our own redirect is being (or was just) re-owned by some
- *     external owner — NetworkManager re-pushing after DHCP, a VPN client (Windscribe) writing its
- *     resolver onto its tunnel after our redirect, etc. — and the snapshot is refreshed to that
- *     live config so restore puts the freshest external value back, never a stale or empty one.
- * Links currently parked on our redirect keep their stored snapshot untouched.
- *
- * This is what makes "disable protection mid-VPN" reliable for clients that didn't exist (or
- * hadn't configured their DNS yet) when protection was enabled: whatever they were last seen with
- * is exactly what restore hands back. Must be called before the caller's redirect re-asserts over
- * a newly-seen external config. No-op on links whose config can't be read (transient D-Bus). */
+/* Bring snapshots up to date: new links get captured (unsettled, waiting for owner DNS);
+ * links with non-proxy DNS get refreshed (external owner just re-asserted); links on our
+ * redirect keep their stored snapshot. */
 void resolved_ctl_refresh_snapshots(GPtrArray *snapshots)
 {
     if (!snapshots) return;
@@ -381,8 +324,7 @@ void resolved_ctl_refresh_snapshots(GPtrArray *snapshots)
         LinkConfigSnapshot *snap = find_snapshot(snapshots, ifindex);
         if (!snap) {
             if (is_proxy_redirect_dns(dns)) {
-                /* Stale parking from a dead previous session, not a real config — see
-                 * resolved_ctl_capture_snapshots(). Don't record it; reassert handles the rest. */
+                /* Stale parking from a previous session — skip. */
                 g_variant_unref(dns);
                 g_variant_unref(domains);
                 continue;
@@ -403,24 +345,9 @@ void resolved_ctl_refresh_snapshots(GPtrArray *snapshots)
     g_object_unref(bus);
 }
 
-/* Per-tick update the reconnect watch calls while protection is live: reconciles the snapshot
- * array with reality, then re-asserts our redirect — one pass, in this exact order:
- *
- *   1. New link (no snapshot yet): capture it WITHOUT redirecting, and wait out
- *      NEW_LINK_GRACE_MS for its owner to configure DNS on it. VPN clients bring the interface up
- *      and set DNS a moment later (Windscribe reliably does); if we redirected inside that window
- *      the link would sit on our 127.0.0.1 forever, the owner's true resolver would never be
- *      visible again, and disable later would hand the link back an empty snapshot — the dead-DNS
- *      mid-VPN bug. Once a non-empty owner DNS appears (or the grace expires on a genuinely no-DNS
- *      link) the snapshot is settled and the link is redirected.
- *   2. Settled link whose live DNS is not our redirect: an external owner (Windscribe re-pushing,
- *      NM re-applying after DHCP) just overwrote us — absorb that config back into the snapshot so
- *      disable restores the freshest value, then redirect again within this same tick.
- *   3. Settled link on our redirect: keep its snapshot untouched, re-assert the redirect.
- *
- * Every active link ends the tick either parked on the proxy or still inside its grace window.
- * Returns the same error-collection contract as redirect_to_local_proxy() (fresh gchar* array,
- * empty on full success). */
+/* Per-tick reassert while protection is live: reconcile snapshots, then re-redirect.
+ * New links get a grace window before redirect; settled links with non-proxy DNS
+ * get their snapshot refreshed then re-redirected. */
 GPtrArray *resolved_ctl_reassert(GPtrArray *snapshots)
 {
     GPtrArray *errors = g_ptr_array_new_with_free_func(g_free);
@@ -445,11 +372,7 @@ GPtrArray *resolved_ctl_reassert(GPtrArray *snapshots)
         LinkConfigSnapshot *snap = find_snapshot(snapshots, ifindex);
         if (!snap) {
             snap = capture_link_snapshot(ifindex, dns, domains, default_route);
-            /* A brand-new link that is already parked on our own redirect carries no genuine
-             * "original" — it's a leftover from a previous protection session (a dead daemon's
-             * redirect the link owner never cleared) or is coming up over an old one. An empty
-             * snapshot then means restore falls back to RevertLink instead of handing the dead
-             * local proxy back as the link's DNS. */
+            /* New link already on our redirect — clear the empty snapshot, let grace handle it. */
             if (is_proxy_redirect_dns(snap->dns)) {
                 g_variant_unref(snap->dns);
                 g_variant_unref(snap->domains);
@@ -563,11 +486,7 @@ GPtrArray *resolved_ctl_restore_dhcp(GPtrArray *snapshots)
     for (guint i = 0; i < links->len; i++) {
         ActiveLink link = g_array_index(links, ActiveLink, i);
         LinkConfigSnapshot *snap = find_snapshot(snapshots, link.ifindex);
-        /* Defense in depth: never write our own redirect back as a link's "restored" DNS, whatever
-         * its origin. A snapshot whose stored DNS is exactly the proxy redirect can only mean the
-         * link's true original was never learned (stale parking captured as "original"), and
-         * restoring it would point the link at the now-dead local proxy — a DNS outage, not a
-         * restore. Fall back to RevertLink + NM nudge for those, same as never-snapshotted links. */
+        /* Defense in depth: never write our own redirect back as restored DNS. */
         if (snap && snap->dns && !is_proxy_redirect_dns(snap->dns)) {
             if (!call_set_link_dns_values(bus, link.ifindex, snap->dns, &error)) {
                 g_ptr_array_add(errors, g_strdup_printf("restoring SetLinkDNS(%d) failed: %s", link.ifindex, error->message));
@@ -586,8 +505,7 @@ GPtrArray *resolved_ctl_restore_dhcp(GPtrArray *snapshots)
             g_clear_error(&error);
         }
     }
-    /* One NM-wide reload after all links are restored, not per-link — see
-     * nudge_network_manager_dns_reload()'s doc comment for why this step exists at all. */
+    /* One NM-wide reload after all links are restored. */
     nudge_network_manager_dns_reload();
 
     g_array_free(links, TRUE);
@@ -597,8 +515,7 @@ GPtrArray *resolved_ctl_restore_dhcp(GPtrArray *snapshots)
 
 #define NM_BUS_NAME "org.freedesktop.NetworkManager"
 #define NM_DEVICE_IFACE "org.freedesktop.NetworkManager.Device"
-/* NM_DEVICE_STATE_ACTIVATED from NetworkManager's public D-Bus API (nm-dbus-interface.h) — stable
- * ABI value, not worth pulling in libnm just for this one constant. */
+/* NM_DEVICE_STATE_ACTIVATED (100) — from nm-dbus-interface.h, no libnm needed. */
 #define NM_DEVICE_STATE_ACTIVATED 100u
 
 #define LOGIN1_BUS_NAME "org.freedesktop.login1"
@@ -630,12 +547,8 @@ static void on_nm_device_state_changed(GDBusConnection *connection, const gchar 
     watch->on_reconnect(watch->user_data);
 }
 
-/* logind's PrepareForSleep(b) fires twice per sleep cycle: TRUE right before the system suspends,
- * FALSE right after it resumes. Only the resume edge is interesting here — it lands the instant
- * the kernel is back, ahead of NM having necessarily finished reassociating/renewing a lease, which
- * is what makes it useful for links (e.g. wired ethernet) that never drop IFF_UP across suspend and
- * so never generate an NM StateChanged transition at all despite resolved's link config having been
- * silently reverted underneath us. */
+/* logind PrepareForSleep: TRUE before suspend, FALSE after resume. Only resume is interesting —
+ * it catches links that never drop IFF_UP across suspend. */
 static void on_logind_prepare_for_sleep(GDBusConnection *connection, const gchar *sender_name,
                                          const gchar *object_path, const gchar *interface_name,
                                          const gchar *signal_name, GVariant *parameters,
@@ -673,7 +586,7 @@ ResolvedCtlWatch *resolved_ctl_watch_start(guint poll_interval_seconds,
                   "disabled (poll-only if enabled): %s", error->message);
         g_clear_error(&error);
     } else {
-        /* NULL object_path matches the signal from every device object NM exposes, not just one. */
+        /* NULL object_path matches all NM device objects. */
         watch->nm_signal_sub_id = g_dbus_connection_signal_subscribe(
             watch->bus, NM_BUS_NAME, NM_DEVICE_IFACE, "StateChanged", NULL, NULL,
             G_DBUS_SIGNAL_FLAGS_NONE, on_nm_device_state_changed, watch, NULL);

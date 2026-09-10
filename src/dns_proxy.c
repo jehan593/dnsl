@@ -46,8 +46,7 @@ static gpointer handle_query_thread(gpointer data)
         sendto(task->fd, response, response_len, 0, (struct sockaddr *)&task->addr, task->addr_len);
         g_free(response);
     } else {
-        /* A dropped query looks like an ordinary DNS timeout to whatever asked, which already
-         * knows how to retry/fail over — nothing further to do. */
+        /* Dropped query looks like a DNS timeout to the caller — it already knows how to retry. */
         g_clear_error(&error);
     }
 
@@ -71,8 +70,7 @@ static gpointer listener_loop(gpointer data)
         ssize_t n = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&addr, &addr_len);
         if (n < 0) {
             if (errno == EINTR) continue;
-            /* EBADF (socket closed under us by dns_proxy_stop) or any other error ends the loop —
-             * transient errors on a UDP socket are rare enough not to warrant a continue-loop. */
+            /* EBADF (socket closed by dns_proxy_stop) or any other error ends the loop. */
             return NULL;
         }
 
@@ -89,9 +87,7 @@ static gpointer listener_loop(gpointer data)
         task->query = g_memdup2(buf, (gsize)n);
         task->query_len = (gsize)n;
 
-        /* Fire-and-forget, same as DnsProxyServer.cs's `_ = HandleQueryAsync(...)` — dot_pool's own
-         * gate (MAX_CONNECTIONS) bounds real concurrency; this just lets independent queries not
-         * wait on each other's TLS round trip. */
+        /* Fire-and-forget — dot_pool's gate bounds real concurrency. */
         GThread *worker = g_thread_new("dnsl-query", handle_query_thread, task);
         g_thread_unref(worker);
     }
@@ -136,8 +132,7 @@ gboolean dns_proxy_start(DnsProxy *proxy, const DnsProvider *provider, int port,
                     "Couldn't bind 127.0.0.1:%d: %s (something else may already be using it)", port, g_strerror(errno));
         return FALSE;
     }
-    /* IPv6 disabled/unavailable on this machine isn't fatal — the IPv4 listener alone still
-     * protects every IPv4 DNS query. */
+    /* IPv6 unavailable isn't fatal — IPv4 alone still protects everything. */
     proxy->fd_v6 = bind_udp(AF_INET6, port);
 
     proxy->pool = dot_pool_new(provider);
@@ -186,17 +181,8 @@ void dns_proxy_stop(DnsProxy *proxy)
     proxy->pool = NULL;
     g_mutex_unlock(&proxy->pool_mutex);
 
-    /* shutdown() BEFORE close() is required here, not just belt-and-suspenders: a plain close()
-     * from this thread does NOT reliably unblock a *different* thread already parked inside a
-     * blocking recvfrom() on the same fd — the kernel keeps the underlying socket alive as long
-     * as that other thread's syscall is in flight, so the listener thread's recvfrom() would
-     * simply never return and the g_thread_join() below would hang forever (confirmed by hand:
-     * this exact omission deadlocked a live daemon process on first real end-to-end testing,
-     * wedged holding protection_controller's mutex — every other IPC command hung too, and even
-     * SIGTERM couldn't recover it since the terminate handler blocks on the same mutex). shutdown()
-     * operates on the socket object itself, not just this thread's fd reference, and reliably
-     * wakes a blocked recvfrom() in any thread — same effect .NET's UdpClient.Dispose() gets for
-     * free via its own cancellation-aware ReceiveAsync. */
+    /* shutdown() before close() — required to unblock a different thread's recvfrom().
+     * Plain close() doesn't reliably wake it; shutdown() does. */
     if (proxy->fd_v4 >= 0) { shutdown(proxy->fd_v4, SHUT_RDWR); close(proxy->fd_v4); proxy->fd_v4 = -1; }
     if (proxy->fd_v6 >= 0) { shutdown(proxy->fd_v6, SHUT_RDWR); close(proxy->fd_v6); proxy->fd_v6 = -1; }
 

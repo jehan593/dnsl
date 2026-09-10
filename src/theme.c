@@ -52,10 +52,7 @@ static gchar *generate_css(const NordPalette *p) {
         p->background, p->on_background);
     ADD("window:backdrop, dialog:backdrop { background-color: %s; color: %s; }\n", p->background, p->on_background);
 
-    /* Suppress GTK's default dashed keyboard-focus ring on our custom controls — the
-     * border-color change on entries/textviews and the checked-state underline on
-     * tabs are already sufficient focus indication, and the box-drawn ring reads as
-     * a rendering glitch against the custom pill/tab shapes. */
+    /* Suppress GTK's focus ring — border-color changes and checked underlines are enough. */
     ADD("button:focus, switch:focus, entry:focus, textview:focus { outline-style: none; outline-width: 0; }\n");
 
     ADD(".dnsl-title { font-family: 'MartianMono NF Med'; font-size: 16px; }\n");
@@ -84,18 +81,20 @@ static gchar *generate_css(const NordPalette *p) {
     ADD(".tab-button:checked:backdrop { color: %s; border-bottom-color: %s; }\n", p->primary, p->primary);
     ADD(".tab-button:hover { background-color: %s; }\n", p->surface_container_high);
 
-    ADD(".pill-button { background-color: %s; background-image: none; color: %s; border-radius: 20px; padding: 8px 16px; "
-        "font-family: 'MartianMono NF Med'; border: none; box-shadow: none; text-shadow: none; }\n", p->primary, p->on_primary);
+    ADD(".pill-button { background-color: %s; background-image: none; color: %s; border-radius: 8px; padding: 8px 16px; "
+        "font-family: 'MartianMono NF Med'; border: none; box-shadow: none; text-shadow: none; "
+        "transition: opacity 120ms ease; }\n", p->primary, p->on_primary);
     ADD(".pill-button:backdrop { background-color: %s; background-image: none; color: %s; }\n", p->primary, p->on_primary);
-    ADD(".pill-button:hover { opacity: 0.88; }\n");
-    ADD(".pill-button:active { opacity: 0.74; }\n");
+    ADD(".pill-button:hover { opacity: 0.85; }\n");
+    ADD(".pill-button:active { opacity: 0.7; }\n");
 
     ADD(".dnsl-text-button { background-color: %s; background-image: none; border: 1px solid %s; border-radius: 8px; "
-        "padding: 7px 14px; margin: 0 4px; font-family: 'MartianMono NF'; box-shadow: none; text-shadow: none; }\n",
+        "padding: 7px 14px; margin: 0 4px; font-family: 'MartianMono NF'; box-shadow: none; text-shadow: none; "
+        "transition: background-color 120ms ease, border-color 120ms ease; }\n",
         p->surface_container_highest, p->outline_variant);
     ADD(".dnsl-text-button:backdrop { background-color: %s; background-image: none; border-color: %s; }\n",
         p->surface_container_highest, p->outline_variant);
-    ADD(".dnsl-text-button:hover { border-color: %s; }\n", p->outline);
+    ADD(".dnsl-text-button:hover { background-color: %s; border-color: %s; }\n", p->surface_container_high, p->outline);
     ADD(".dnsl-text-button:disabled { opacity: 0.4; }\n");
     ADD(".text-button-primary { color: %s; }\n", p->primary);
     ADD(".text-button-neutral { color: %s; }\n", p->on_surface_variant);
@@ -105,7 +104,8 @@ static gchar *generate_css(const NordPalette *p) {
     ADD(".text-button-error:backdrop { color: %s; }\n", p->error);
 
     ADD(".icon-button { background-color: transparent; background-image: none; border: none; border-radius: 20px; "
-        "min-width: 40px; min-height: 40px; padding: 0; box-shadow: none; }\n");
+        "min-width: 40px; min-height: 40px; padding: 0; box-shadow: none; "
+        "transition: background-color 120ms ease; }\n");
     ADD(".icon-button:hover { background-color: %s; background-image: none; }\n", p->surface_container_high);
     ADD(".icon-button:active { background-color: %s; background-image: none; }\n", p->surface_container_highest);
     ADD(".icon-button:disabled { opacity: 0.4; }\n");
@@ -154,17 +154,7 @@ static gchar *generate_css(const NordPalette *p) {
     ADD("list row, listbox row { background-color: transparent; padding: 0; }\n");
     ADD("list row:selected, listbox row:selected { background-color: transparent; }\n");
 
-    /* Provider list rows (providers_window.c) — the generic listbox rule above deliberately
-     * leaves :selected transparent for other lists in this codebase, so these need their own
-     * higher-specificity rules (an added class beats a bare type+pseudo-class selector) to get an
-     * actual hover effect and a visibly-different "this one's active" highlight, rather than the
-     * list looking like plain unclickable text. Must target "list row...", not "listbox row..." —
-     * GtkListBox's real CSS node name is "list" (confirmed: the generic rule above only works via
-     * its "list row:selected" half; "listbox" never matches anything on this GTK version, it's
-     * dead weight kept only for whatever originally motivated the belt-and-suspenders in the
-     * generic rule). Using only "listbox row.provider-row..." here originally meant these rules
-     * silently matched nothing at all, and the generic transparent rule won by default — no hover,
-     * no highlight, confirmed by hand and fixed by switching to "list row.provider-row...". */
+    /* Provider list rows — need higher specificity than the generic transparent list rule. */
     ADD("list row.provider-row { border-radius: 12px; margin: 2px 8px; "
         "transition: background-color 120ms ease, border-color 120ms ease; "
         "border: 1px solid transparent; }\n");
@@ -177,10 +167,7 @@ static gchar *generate_css(const NordPalette *p) {
     ADD("list row.provider-row:selected .dnsl-title, "
         "list row.provider-row:selected .dnsl-body-small { color: %s; }\n", p->on_primary_container);
 
-    /* gtk_container_set_border_width() is a no-op for GtkBox/GtkDialog content-area
-     * child layout on this GTK build (confirmed via allocation dump: children land
-     * flush with the container's own edge regardless of border-width). Use real CSS
-     * padding instead everywhere inner-content inset is needed. */
+    /* gtk_container_set_border_width() is a no-op for child layout here — use CSS padding. */
     ADD(".content-pad-16 { padding: 16px; }\n");
     ADD(".content-pad-20 { padding: 20px; }\n");
 
@@ -271,12 +258,7 @@ static void on_gsettings_changed(GSettings *settings, const gchar *key, gpointer
 
 void dnsl_theme_init(void) {
     g_provider = gtk_css_provider_new();
-    /* Dnsl has its own fixed Nord design system and must render identically
-     * regardless of the user's system GTK theme — but GTK auto-loads
-     * ~/.config/gtk-3.0/gtk.css at GTK_STYLE_PROVIDER_PRIORITY_USER, which outranks
-     * PRIORITY_APPLICATION and was silently overriding our button/card colors with
-     * the user's own theme accent colors. Go one priority level above USER so our
-     * stylesheet always wins. */
+    /* PRIORITY_USER + 1 so our stylesheet outranks ~/.config/gtk-3.0/gtk.css. */
     gtk_style_context_add_provider_for_screen(
         gdk_screen_get_default(), GTK_STYLE_PROVIDER(g_provider), GTK_STYLE_PROVIDER_PRIORITY_USER + 1);
 

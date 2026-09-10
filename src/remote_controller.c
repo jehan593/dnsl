@@ -80,18 +80,8 @@ static gpointer client_loop(gpointer data)
                 struct sockaddr_un addr = { .sun_family = AF_UNIX };
                 g_strlcpy(addr.sun_path, DNSL_SOCKET_PATH, sizeof(addr.sun_path));
                 if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-                    /* Separate FILE* per direction, each wrapping its own fd (one dup()'d) —
-                     * NOT one shared fdopen(fd, "r+"). glibc serializes every stdio call on a
-                     * given FILE* with one internal per-stream lock, held for the whole duration
-                     * of a blocking call, not just buffer bookkeeping — this thread's getline()
-                     * below sits inside that lock almost permanently (it's blocked waiting for
-                     * the next status push). A single shared FILE* meant the GTK main thread's
-                     * fprintf() (sending a command) blocked forever on that same lock, which
-                     * only getline() could release, which only happens when a new line arrives,
-                     * which can't happen until the command is sent — a real deadlock, confirmed
-                     * by hand: clicking "Enable" wedged the whole tray, Cinnamon's WM eventually
-                     * offered to force-quit it. Two independent FILE*s means two independent
-                     * locks, so read and write never contend. */
+                    /* Separate FILE* per direction — a single shared fdopen(fd, "r+") deadlocks
+                     * because getline() holds glibc's per-stream lock while blocked. */
                     int write_fd = dup(fd);
                     FILE *rf = fdopen(fd, "r");
                     FILE *wf = write_fd >= 0 ? fdopen(write_fd, "w") : NULL;
@@ -208,7 +198,7 @@ static void send_command(RemoteController *rc, IpcCommand *cmd)
 
     if (!connected) {
         ipc_command_free(cmd);
-        dispatch_error(rc, "dnsl's background service isn't running.");
+        dispatch_error(rc, "Background service isn't running.");
         return;
     }
 
@@ -218,7 +208,7 @@ static void send_command(RemoteController *rc, IpcCommand *cmd)
     g_free(line);
 
     if (write_failed) {
-        dispatch_error(rc, "Lost connection to dnsl's background service.");
+        dispatch_error(rc, "Lost connection to the background service.");
         /* Don't tear the connection down here — the background thread's next getline() will
          * observe the same broken pipe and run the one true disconnect path. */
     }
