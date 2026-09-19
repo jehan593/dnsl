@@ -53,7 +53,7 @@ static gchar *generate_css(const NordPalette *p) {
         p->background, p->on_background);
     ADD("window:backdrop, dialog:backdrop { background-color: %s; color: %s; }\n", p->background, p->on_background);
 
-    /* Buttons stay visually quiet; entries retain their focused border below. */
+    /* Keep controls simple; entries retain their focused border below. */
     ADD("button, switch, checkbutton, row, entry, textview { outline-style: none; }\n");
     ADD("button, entry, checkbutton { color: %s; text-shadow: none; }\n", p->on_surface);
     ADD("dialog { background-color: %s; }\n", p->surface);
@@ -102,7 +102,7 @@ static gchar *generate_css(const NordPalette *p) {
         "transition: background-color 120ms ease, border-color 120ms ease; }\n",
         p->outline);
     ADD(".dnsl-text-button:backdrop { background-color: transparent; background-image: none; border-color: %s; }\n", p->outline);
-    ADD(".dnsl-text-button:hover { border-color: %s; }\n", p->primary);
+    ADD(".dnsl-text-button:hover:not(:disabled) { background-color: alpha(%s, 0.12); background-image: none; border-color: %s; }\n", p->primary, p->primary);
     ADD(".dnsl-text-button.dismiss-button { border-color: transparent; }\n");
     ADD(".dnsl-text-button:disabled { opacity: 0.65; }\n");
     ADD(".text-button-primary { color: %s; }\n", p->primary);
