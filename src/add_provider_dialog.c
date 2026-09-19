@@ -13,8 +13,14 @@ static gboolean looks_like_ip(const gchar *s)
 
 static GtkWidget *labeled_field(GtkWidget *box, const gchar *label_text, GtkWidget *field)
 {
-    gtk_box_pack_start(GTK_BOX(box), ui_label_label_new(label_text), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), field, FALSE, FALSE, 0);
+    GtkWidget *group = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *label = ui_label_label_new(label_text);
+    gtk_label_set_mnemonic_widget(GTK_LABEL(label), field);
+    atk_object_set_name(gtk_widget_get_accessible(field), label_text);
+    gtk_entry_set_activates_default(GTK_ENTRY(field), TRUE);
+    gtk_box_pack_start(GTK_BOX(group), label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(group), field, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), group, FALSE, FALSE, 0);
     return field;
 }
 
@@ -22,8 +28,8 @@ static GtkWidget *labeled_field(GtkWidget *box, const gchar *label_text, GtkWidg
 static void pad_dialog_action_area(GtkDialog *dialog)
 {
     GtkWidget *action_area = gtk_dialog_get_action_area(dialog);
-    gtk_widget_set_margin_start(action_area, 20);
-    gtk_widget_set_margin_end(action_area, 20);
+    gtk_widget_set_margin_start(action_area, 16);
+    gtk_widget_set_margin_end(action_area, 16);
     gtk_widget_set_margin_top(action_area, 4);
     gtk_widget_set_margin_bottom(action_area, 16);
 }
@@ -39,7 +45,7 @@ static gchar *entry_text_stripped(GtkEntry *entry)
 
 DnsProvider *add_provider_dialog_run_custom(GtkWindow *parent)
 {
-    GtkWidget *dialog = gtk_dialog_new_with_buttons("Add Custom DNS", parent,
+    GtkWidget *dialog = gtk_dialog_new_with_buttons("Add custom DNS", parent,
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, NULL, NULL);
     gtk_window_set_default_size(GTK_WINDOW(dialog), 380, -1);
 
@@ -47,12 +53,16 @@ DnsProvider *add_provider_dialog_run_custom(GtkWindow *parent)
     GtkWidget *add = gtk_dialog_add_button(GTK_DIALOG(dialog), "Add", GTK_RESPONSE_OK);
     gtk_style_context_add_class(gtk_widget_get_style_context(cancel), "dnsl-text-button");
     gtk_style_context_add_class(gtk_widget_get_style_context(cancel), "text-button-neutral");
+    gtk_style_context_add_class(gtk_widget_get_style_context(cancel), "dismiss-button");
     gtk_style_context_add_class(gtk_widget_get_style_context(add), "pill-button");
+    gtk_widget_set_can_focus(cancel, FALSE);
+    gtk_widget_set_can_focus(add, FALSE);
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
     pad_dialog_action_area(GTK_DIALOG(dialog));
 
     GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_style_context_add_class(gtk_widget_get_style_context(box), "content-pad-20");
+    gtk_style_context_add_class(gtk_widget_get_style_context(box), "content-pad-16");
     gtk_container_add(GTK_CONTAINER(content), box);
 
     GtkWidget *name_entry = labeled_field(box, "Name", ui_outlined_entry_new());
@@ -135,12 +145,16 @@ DnsProvider *add_provider_dialog_run_nextdns(GtkWindow *parent)
     GtkWidget *add = gtk_dialog_add_button(GTK_DIALOG(dialog), "Add", GTK_RESPONSE_OK);
     gtk_style_context_add_class(gtk_widget_get_style_context(cancel), "dnsl-text-button");
     gtk_style_context_add_class(gtk_widget_get_style_context(cancel), "text-button-neutral");
+    gtk_style_context_add_class(gtk_widget_get_style_context(cancel), "dismiss-button");
     gtk_style_context_add_class(gtk_widget_get_style_context(add), "pill-button");
+    gtk_widget_set_can_focus(cancel, FALSE);
+    gtk_widget_set_can_focus(add, FALSE);
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
     pad_dialog_action_area(GTK_DIALOG(dialog));
 
     GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_style_context_add_class(gtk_widget_get_style_context(box), "content-pad-20");
+    gtk_style_context_add_class(gtk_widget_get_style_context(box), "content-pad-16");
     gtk_container_add(GTK_CONTAINER(content), box);
 
     GtkWidget *config_entry = labeled_field(box, "Config ID", ui_outlined_entry_new());

@@ -12,7 +12,14 @@ struct TrayController {
     GtkWidget *menu;
     GtkWidget *providers_window;
     gchar *pending_error; /* shown once on the next rebuild, then cleared — never sticky */
+    GTask *install_task;
+    ProvidersInstallState install_state;
+    gchar *install_message;
 };
+
+typedef struct {
+    TrayController *tc; /* Cleared if the tray is freed while installation is running. */
+} InstallRequest;
 
 typedef struct {
     TrayController *tc;
@@ -29,11 +36,24 @@ static void provider_menu_data_free(gpointer p, GClosure *closure)
 
 static void rebuild_menu(TrayController *tc);
 
+static gboolean service_ready(TrayController *tc)
+{
+    IpcStatus *status = remote_controller_snapshot(tc->remote);
+    gboolean ready = remote_controller_is_connected(tc->remote) && status != NULL;
+    if (status) ipc_status_free(status);
+    return ready;
+}
+
 static void on_state_changed(gpointer user_data)
 {
     TrayController *tc = user_data;
+    if (tc->install_state == PROVIDERS_INSTALL_CONNECTING && service_ready(tc)) {
+        tc->install_state = PROVIDERS_INSTALL_IDLE;
+        g_clear_pointer(&tc->install_message, g_free);
+    }
     rebuild_menu(tc);
-    if (tc->providers_window) providers_window_refresh(tc->providers_window);
+    if (tc->providers_window)
+        providers_window_set_install_state(tc->providers_window, tc->install_state, tc->install_message);
 }
 
 static void on_remote_error(const gchar *message, gpointer user_data)
@@ -75,31 +95,57 @@ static void on_autostart_toggled(GtkCheckMenuItem *item, gpointer user_data)
     if (tc->providers_window) providers_window_refresh(tc->providers_window);
 }
 
-static gboolean idle_install_failed(gpointer user_data)
+static void install_finished(GObject *source, GAsyncResult *result, gpointer user_data)
 {
-    TrayController *tc = user_data;
-    g_free(tc->pending_error);
-    tc->pending_error = g_strdup("Failed to install the background service.");
+    (void)source; (void)user_data;
+    GTask *task = G_TASK(result);
+    InstallRequest *request = g_task_get_task_data(task);
+    TrayController *tc = request->tc;
+    if (!tc) return;
+    InstallerResult outcome = g_task_propagate_int(task, NULL);
+    g_clear_object(&tc->install_task);
+    tc->install_state = (outcome == INSTALLER_STARTED || outcome == INSTALLER_ALREADY_RUNNING)
+        && !service_ready(tc) ? PROVIDERS_INSTALL_CONNECTING : PROVIDERS_INSTALL_IDLE;
+    g_free(tc->install_message);
+    tc->install_message = g_strdup(outcome == INSTALLER_FAILED
+        ? "Service setup failed. Try again."
+        : outcome == INSTALLER_CANCELLED ? "Setup cancelled. Try again when ready."
+        : NULL);
+    if (outcome == INSTALLER_FAILED) {
+        g_free(tc->pending_error);
+        tc->pending_error = g_strdup(tc->install_message);
+    }
     rebuild_menu(tc);
-    return G_SOURCE_REMOVE;
+    if (tc->providers_window)
+        providers_window_set_install_state(tc->providers_window, tc->install_state, tc->install_message);
 }
 
-static gpointer install_thread(gpointer user_data)
+static void install_thread(GTask *task, gpointer source, gpointer task_data, GCancellable *cancellable)
+{
+    (void)source; (void)task_data; (void)cancellable;
+    g_task_return_int(task, installer_ensure_installed_and_running());
+}
+
+static void start_install(gpointer user_data)
 {
     TrayController *tc = user_data;
-    InstallerResult result = installer_ensure_installed_and_running();
-    if (result == INSTALLER_FAILED) {
-        g_idle_add(idle_install_failed, tc);
-    }
-    /* On success, RemoteController's reconnect loop picks up the daemon automatically. */
-    return NULL;
+    if (tc->install_state != PROVIDERS_INSTALL_IDLE) return;
+    tc->install_state = PROVIDERS_INSTALL_RUNNING;
+    InstallRequest *request = g_new0(InstallRequest, 1);
+    request->tc = tc;
+    tc->install_task = g_task_new(NULL, NULL, install_finished, NULL);
+    g_task_set_task_data(tc->install_task, request, g_free);
+    g_clear_pointer(&tc->install_message, g_free);
+    rebuild_menu(tc);
+    if (tc->providers_window)
+        providers_window_set_install_state(tc->providers_window, tc->install_state, NULL);
+    g_task_run_in_thread(tc->install_task, install_thread);
 }
 
 static void on_install_clicked(GtkMenuItem *item, gpointer user_data)
 {
     (void)item;
-    GThread *t = g_thread_new("dnsl-install", install_thread, user_data);
-    g_thread_unref(t);
+    start_install(user_data);
 }
 
 static void on_exit_clicked(GtkMenuItem *item, gpointer user_data)
@@ -129,7 +175,10 @@ static void rebuild_disconnected(TrayController *tc, GtkWidget *menu)
     append_item(menu, "Service not running", FALSE);
     append_separator(menu);
 
-    GtkWidget *install_item = gtk_menu_item_new_with_label("Install background service…");
+    GtkWidget *install_item = gtk_menu_item_new_with_label(
+        tc->install_state == PROVIDERS_INSTALL_RUNNING ? "Installing…"
+        : tc->install_state == PROVIDERS_INSTALL_CONNECTING ? "Connecting…" : "Install background service…");
+    gtk_widget_set_sensitive(install_item, tc->install_state == PROVIDERS_INSTALL_IDLE);
     g_signal_connect(install_item, "activate", G_CALLBACK(on_install_clicked), tc);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), install_item);
     append_separator(menu);
@@ -246,10 +295,10 @@ static void on_providers_window_autostart_changed(gpointer user_data)
 void tray_controller_show_providers_window(TrayController *tc)
 {
     if (!tc->providers_window) {
-        tc->providers_window = providers_window_new(NULL, tc->remote, on_providers_window_autostart_changed, tc);
+        tc->providers_window = providers_window_new(NULL, tc->remote, on_providers_window_autostart_changed, start_install, tc);
         g_signal_connect(tc->providers_window, "destroy", G_CALLBACK(on_providers_window_destroyed), tc);
     }
-    providers_window_refresh(tc->providers_window);
+    providers_window_set_install_state(tc->providers_window, tc->install_state, tc->install_message);
     gtk_widget_show_all(tc->providers_window);
     gtk_window_present(GTK_WINDOW(tc->providers_window));
 }
@@ -274,6 +323,12 @@ TrayController *tray_controller_new(GtkApplication *app, RemoteController *remot
 void tray_controller_free(TrayController *tc)
 {
     if (!tc) return;
+    if (tc->install_task) {
+        InstallRequest *request = g_task_get_task_data(tc->install_task);
+        request->tc = NULL;
+        g_clear_object(&tc->install_task);
+    }
+    g_free(tc->install_message);
     if (tc->menu) gtk_widget_destroy(tc->menu);
     if (tc->providers_window) gtk_widget_destroy(tc->providers_window);
     g_free(tc->icon_dir);

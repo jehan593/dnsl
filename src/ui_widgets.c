@@ -8,6 +8,7 @@ GtkWidget *ui_pill_button_new(const gchar *label_text) {
     GtkWidget *button = gtk_button_new_with_label(label_text);
     add_class(button, "flat");
     add_class(button, "pill-button");
+    gtk_widget_set_can_focus(button, FALSE);
     return button;
 }
 
@@ -16,6 +17,7 @@ GtkWidget *ui_text_button_new(const gchar *label_text, const gchar *color_class)
     add_class(button, "flat");
     add_class(button, "dnsl-text-button");
     add_class(button, color_class);
+    gtk_widget_set_can_focus(button, FALSE);
     return button;
 }
 
@@ -26,8 +28,12 @@ GtkWidget *ui_icon_button_new(const gchar *icon_name, const gchar *tooltip, gboo
     gtk_button_set_relief(GTK_BUTTON(button), GTK_RELIEF_NONE);
     add_class(button, "flat");
     add_class(button, "icon-button");
+    gtk_widget_set_can_focus(button, FALSE);
     if (small) add_class(button, "icon-button-small");
-    if (tooltip) gtk_widget_set_tooltip_text(button, tooltip);
+    if (tooltip) {
+        gtk_widget_set_tooltip_text(button, tooltip);
+        atk_object_set_name(gtk_widget_get_accessible(button), tooltip);
+    }
     return button;
 }
 
