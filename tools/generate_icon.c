@@ -1,6 +1,5 @@
-/* Regenerates data/icons/dnsl-{enabled,disabled}-*.png: a padlock glyph on a rounded Nord0
- * square, in two color variants — Nord8 (protected) and Nord3 (not protected) — mirroring dnsw's
- * own Assets/generate-icon.ps1. Re-run if the palette/motif changes; don't hand-edit the PNGs.
+/* Regenerate the icons after palette or shape changes rather than editing the PNGs.
+ * Nord9 means protected; Nord3 means unprotected, both on a Nord0 background.
  * Usage: ./generate_icon <out_dir>
  */
 #define _USE_MATH_DEFINES
@@ -12,9 +11,9 @@
 #define NORD0_G (0x34 / 255.0)
 #define NORD0_B (0x40 / 255.0)
 
-#define NORD8_R (0x88 / 255.0)
-#define NORD8_G (0xC0 / 255.0)
-#define NORD8_B (0xD0 / 255.0)
+#define NORD9_R (0x81 / 255.0)
+#define NORD9_G (0xA1 / 255.0)
+#define NORD9_B (0xC1 / 255.0)
 
 #define NORD3_R (0x4C / 255.0)
 #define NORD3_G (0x56 / 255.0)
@@ -91,7 +90,7 @@ int main(int argc, char **argv)
     int sizes[] = { 16, 32, 48, 256 };
     int rc = 0;
     for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
-        rc |= render(out_dir, "enabled", sizes[i], NORD8_R, NORD8_G, NORD8_B);
+        rc |= render(out_dir, "enabled", sizes[i], NORD9_R, NORD9_G, NORD9_B);
         rc |= render(out_dir, "disabled", sizes[i], NORD3_R, NORD3_G, NORD3_B);
     }
     return rc;

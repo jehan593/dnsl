@@ -7,20 +7,54 @@ typedef struct {
     RemoteController *remote;
     GtkWidget *status_label;
     GtkWidget *toggle_button;
+    GtkWidget *install_button;
+    ProvidersInstallState install_state;
+    gchar *install_message;
+    ProvidersWindowInstallFn on_install;
     GtkWidget *list_box;
     gulong list_box_selected_handler;
     GtkWidget *autostart_check;
     gulong autostart_handler;
     ProvidersWindowAutostartChangedFn on_autostart_changed;
-    gpointer autostart_changed_user_data;
+    gpointer callback_user_data;
 } ProvidersWindowData;
 
-static void data_free(gpointer p) { g_free(p); }
+static void data_free(gpointer p)
+{
+    ProvidersWindowData *data = p;
+    g_free(data->install_message);
+    g_free(data);
+}
+
+static void on_install_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    ProvidersWindowData *data = user_data;
+    if (data->on_install) data->on_install(data->callback_user_data);
+}
+
+void providers_window_set_install_state(GtkWidget *window, ProvidersInstallState state, const gchar *message)
+{
+    ProvidersWindowData *data = g_object_get_data(G_OBJECT(window), "pw-data");
+    data->install_state = state;
+    g_free(data->install_message);
+    data->install_message = g_strdup(message);
+    providers_window_refresh(window);
+}
 
 static void destroy_widget_cb(GtkWidget *widget, gpointer user_data)
 {
     (void)user_data;
     gtk_widget_destroy(widget);
+}
+
+static gboolean on_main_window_focus(GtkWidget *window, GtkDirectionType direction, gpointer user_data)
+{
+    (void)direction; (void)user_data;
+    /* Stop GtkWindow's traversal before GtkListBox can enter a provider row.
+     * Dialogs are separate windows and retain their text-field navigation. */
+    gtk_window_set_focus(GTK_WINDOW(window), NULL);
+    return TRUE;
 }
 
 static void on_toggle_clicked(GtkButton *button, gpointer user_data)
@@ -71,7 +105,7 @@ static void on_autostart_toggled(GtkToggleButton *check, gpointer user_data)
 {
     ProvidersWindowData *data = user_data;
     autostart_set_enabled(gtk_toggle_button_get_active(check));
-    if (data->on_autostart_changed) data->on_autostart_changed(data->autostart_changed_user_data);
+    if (data->on_autostart_changed) data->on_autostart_changed(data->callback_user_data);
 }
 
 static void on_close_clicked(GtkButton *button, gpointer user_data)
@@ -83,14 +117,15 @@ static void on_close_clicked(GtkButton *button, gpointer user_data)
 static GtkWidget *build_provider_row(ProvidersWindowData *data, const DnsProvider *provider)
 {
     GtkWidget *row = gtk_list_box_row_new();
+    gtk_widget_set_can_focus(row, FALSE);
     gtk_style_context_add_class(gtk_widget_get_style_context(row), "provider-row");
     g_object_set_data_full(G_OBJECT(row), "provider-id", g_strdup(provider->id), g_free);
 
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_style_context_add_class(gtk_widget_get_style_context(hbox), "content-pad-16");
+    gtk_style_context_add_class(gtk_widget_get_style_context(hbox), "content-pad-12");
     gtk_container_add(GTK_CONTAINER(row), hbox);
 
-    GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *text_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     GtkWidget *name_label = ui_title_label_new(provider->name);
     gtk_label_set_xalign(GTK_LABEL(name_label), 0.0);
     gtk_box_pack_start(GTK_BOX(text_box), name_label, FALSE, FALSE, 0);
@@ -105,12 +140,14 @@ static GtkWidget *build_provider_row(ProvidersWindowData *data, const DnsProvide
     GtkWidget *detail_label = ui_body_small_label_new(detail);
     g_free(detail);
     gtk_label_set_line_wrap(GTK_LABEL(detail_label), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(detail_label), PANGO_WRAP_WORD_CHAR);
+    gtk_widget_set_hexpand(text_box, TRUE);
     gtk_box_pack_start(GTK_BOX(text_box), detail_label, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(hbox), text_box, TRUE, TRUE, 0);
 
     if (provider->is_custom) {
-        GtkWidget *delete_button = ui_icon_button_new("edit-delete-symbolic", "Remove", TRUE);
+        GtkWidget *delete_button = ui_icon_button_new("edit-delete-symbolic", "Delete provider", TRUE);
         gtk_style_context_add_class(gtk_widget_get_style_context(delete_button), "icon-tint-error");
         g_object_set_data_full(G_OBJECT(delete_button), "provider-id", g_strdup(provider->id), g_free);
         g_object_set_data(G_OBJECT(delete_button), "pw-data", data);
@@ -128,9 +165,20 @@ void providers_window_refresh(GtkWidget *window)
     ProvidersWindowData *data = g_object_get_data(G_OBJECT(window), "pw-data");
     IpcStatus *status = remote_controller_snapshot(data->remote);
     gboolean connected = remote_controller_is_connected(data->remote);
+    gboolean ready = connected && status;
+    gtk_widget_set_visible(data->install_button, !ready);
+    gtk_widget_set_visible(data->toggle_button, ready);
+    gtk_widget_set_sensitive(data->install_button, data->install_state == PROVIDERS_INSTALL_IDLE);
+    gtk_button_set_label(GTK_BUTTON(data->install_button),
+        data->install_state == PROVIDERS_INSTALL_RUNNING ? "Installing…"
+        : data->install_state == PROVIDERS_INSTALL_CONNECTING ? "Connecting…" : "Install service");
 
     if (!connected || !status) {
-        gtk_label_set_text(GTK_LABEL(data->status_label), "Service not running — use the tray menu to install it.");
+        gtk_label_set_text(GTK_LABEL(data->status_label), data->install_state == PROVIDERS_INSTALL_RUNNING
+            ? "Setting up the background service…"
+            : data->install_state == PROVIDERS_INSTALL_CONNECTING ? "Service started. Connecting…"
+            : (data->install_message ? data->install_message
+               : "Install the background service to turn on DNS protection."));
         gtk_button_set_label(GTK_BUTTON(data->toggle_button), "Enable");
         gtk_widget_set_sensitive(data->toggle_button, FALSE);
         gtk_container_foreach(GTK_CONTAINER(data->list_box), destroy_widget_cb, NULL);
@@ -172,9 +220,11 @@ void providers_window_refresh(GtkWidget *window)
 }
 
 GtkWidget *providers_window_new(GtkWindow *transient_parent, RemoteController *remote,
-                                 ProvidersWindowAutostartChangedFn on_autostart_changed, gpointer user_data)
+                                 ProvidersWindowAutostartChangedFn on_autostart_changed,
+                                 ProvidersWindowInstallFn on_install, gpointer user_data)
 {
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    g_signal_connect(window, "focus", G_CALLBACK(on_main_window_focus), NULL);
     gtk_window_set_title(GTK_WINDOW(window), "dnsl — Providers");
     gtk_window_set_default_size(GTK_WINDOW(window), 520, 620);
     if (transient_parent) gtk_window_set_transient_for(GTK_WINDOW(window), transient_parent);
@@ -182,51 +232,64 @@ GtkWidget *providers_window_new(GtkWindow *transient_parent, RemoteController *r
     ProvidersWindowData *data = g_new0(ProvidersWindowData, 1);
     data->remote = remote;
     data->on_autostart_changed = on_autostart_changed;
-    data->autostart_changed_user_data = user_data;
+    data->on_install = on_install;
+    data->callback_user_data = user_data;
     g_object_set_data_full(G_OBJECT(window), "pw-data", data, data_free);
 
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    gtk_style_context_add_class(gtk_widget_get_style_context(root), "content-pad-20");
+    gtk_style_context_add_class(gtk_widget_get_style_context(root), "content-pad-16");
     gtk_container_add(GTK_CONTAINER(window), root);
 
+    GtkWidget *status_card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_style_context_add_class(gtk_widget_get_style_context(status_card), "card");
+    gtk_style_context_add_class(gtk_widget_get_style_context(status_card), "content-pad-12");
+    gtk_box_pack_start(GTK_BOX(status_card), ui_title_label_new("DNS protection"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(root), status_card, FALSE, FALSE, 0);
     data->status_label = ui_body_small_label_new("");
     gtk_label_set_line_wrap(GTK_LABEL(data->status_label), TRUE);
-    gtk_box_pack_start(GTK_BOX(root), data->status_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(status_card), data->status_label, FALSE, FALSE, 0);
 
     data->toggle_button = ui_pill_button_new("Enable");
-    gtk_widget_set_halign(data->toggle_button, GTK_ALIGN_START);
+    gtk_widget_set_no_show_all(data->toggle_button, TRUE);
     g_signal_connect(data->toggle_button, "clicked", G_CALLBACK(on_toggle_clicked), data);
-    gtk_box_pack_start(GTK_BOX(root), data->toggle_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(status_card), data->toggle_button, FALSE, FALSE, 0);
+    data->install_button = ui_pill_button_new("Install service");
+    gtk_widget_set_no_show_all(data->install_button, TRUE);
+    g_signal_connect(data->install_button, "clicked", G_CALLBACK(on_install_clicked), data);
+    gtk_box_pack_start(GTK_BOX(status_card), data->install_button, FALSE, FALSE, 0);
 
-    gtk_box_pack_start(GTK_BOX(root), ui_hairline_new(), FALSE, FALSE, 4);
-    gtk_box_pack_start(GTK_BOX(root), ui_label_label_new("DNS Provider"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(root), ui_label_label_new("DNS provider"), FALSE, FALSE, 0);
 
     GtkWidget *scroller = gtk_scrolled_window_new(NULL, NULL);
+    gtk_widget_set_can_focus(scroller, FALSE);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroller), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_widget_set_vexpand(scroller, TRUE);
     data->list_box = gtk_list_box_new();
+    gtk_widget_set_can_focus(data->list_box, FALSE);
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(data->list_box), GTK_SELECTION_SINGLE);
     data->list_box_selected_handler = g_signal_connect(data->list_box, "row-selected", G_CALLBACK(on_row_selected), data);
     gtk_container_add(GTK_CONTAINER(scroller), data->list_box);
     gtk_box_pack_start(GTK_BOX(root), scroller, TRUE, TRUE, 0);
 
     GtkWidget *add_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *add_custom = ui_text_button_new("+ Custom", "text-button-neutral");
+    GtkWidget *add_custom = ui_text_button_new("Add custom", "text-button-primary");
     g_signal_connect(add_custom, "clicked", G_CALLBACK(on_add_custom_clicked), data);
-    GtkWidget *add_nextdns = ui_text_button_new("+ NextDNS", "text-button-neutral");
+    GtkWidget *add_nextdns = ui_text_button_new("Add NextDNS", "text-button-primary");
     g_signal_connect(add_nextdns, "clicked", G_CALLBACK(on_add_nextdns_clicked), data);
-    gtk_box_pack_start(GTK_BOX(add_row), add_custom, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(add_row), add_nextdns, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(add_row), add_custom, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(add_row), add_nextdns, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(root), add_row, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(root), ui_hairline_new(), FALSE, FALSE, 4);
 
     data->autostart_check = gtk_check_button_new_with_label("Start with this session");
+    gtk_widget_set_can_focus(data->autostart_check, FALSE);
     data->autostart_handler = g_signal_connect(data->autostart_check, "toggled", G_CALLBACK(on_autostart_toggled), data);
     gtk_box_pack_start(GTK_BOX(root), data->autostart_check, FALSE, FALSE, 0);
 
     GtkWidget *bottom_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     GtkWidget *close_button = ui_text_button_new("Close", "text-button-neutral");
+    gtk_style_context_add_class(gtk_widget_get_style_context(close_button), "dismiss-button");
     g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), NULL);
     gtk_box_pack_end(GTK_BOX(bottom_row), close_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(root), bottom_row, FALSE, FALSE, 0);
