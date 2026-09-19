@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+> Networking update: the live backend now uses nftables interception, not the
+> systemd-resolved snapshot/redirect flow described in the historical sections
+> below. [docs/networking.md](docs/networking.md) is authoritative for networking,
+> cleanup, dependencies, tests, and migration. `resolved_ctl.c` is excluded from
+> the application build and retained only for its regression test.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is

@@ -18,6 +18,8 @@ DotPool *dot_pool_new(const DnsProvider *provider);
 
 DotPool *dot_pool_ref(DotPool *pool);
 void dot_pool_unref(DotPool *pool);
+/* Abort active/idle sockets and prevent new upstream connections. */
+void dot_pool_cancel(DotPool *pool);
 
 /* Forwards `query` (raw DNS message, `query_len` bytes) and blocks for the response. Returns a
  * newly allocated buffer via out_response/out_response_len on success (caller frees with g_free),

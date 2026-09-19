@@ -1,11 +1,13 @@
-/* One binary, three roles: --daemon, --install-service/--start-service, or tray (no args). */
+/* One binary: daemon, service setup/cleanup helpers, or tray (no arguments). */
 #include <gtk/gtk.h>
 #include <string.h>
+#include <signal.h>
 
 #include "app_identity.h"
 #include "assets.h"
 #include "theme.h"
 #include "daemon.h"
+#include "intercept_ctl.h"
 #include "installer.h"
 #include "remote_controller.h"
 #include "tray.h"
@@ -51,9 +53,11 @@ static gboolean has_arg(int argc, char **argv, const gchar *flag)
 
 int main(int argc, char **argv)
 {
+    signal(SIGPIPE, SIG_IGN);
+    if (has_arg(argc, argv, "--cleanup-network")) return intercept_ctl_cleanup_entry();
     if (has_arg(argc, argv, "--daemon")) return daemon_run();
 
-    if (has_arg(argc, argv, "--install-service") || has_arg(argc, argv, "--start-service")) {
+    if (has_arg(argc, argv, "--install-service") || has_arg(argc, argv, "--start-service") || has_arg(argc, argv, "--register-service")) {
         return installer_run_elevated_helper_entry_point(argc, argv);
     }
 

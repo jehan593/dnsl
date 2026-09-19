@@ -65,18 +65,18 @@ static gboolean write_unit_file(const gchar *exe_path, GError **error)
     gchar *contents = g_strdup_printf(
         "[Unit]\n"
         "Description=dnsl DNS-over-TLS proxy\n"
-        "After=network.target systemd-resolved.service\n"
-        "Wants=systemd-resolved.service\n"
+        "After=network.target\n"
         "\n"
         "[Service]\n"
         "Type=simple\n"
         "ExecStart=%s --daemon\n"
+        "ExecStopPost=%s --cleanup-network\n"
         "Restart=on-failure\n"
         "RestartSec=5\n"
         "\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n",
-        exe_path);
+        exe_path, exe_path);
 
     gboolean ok = g_file_set_contents(DNSL_SYSTEMD_UNIT_PATH, contents, -1, error);
     g_free(contents);
@@ -115,16 +115,17 @@ static gboolean start_unit(void)
 
 int installer_run_elevated_helper_entry_point(int argc, char **argv)
 {
-    gboolean install = FALSE, start = FALSE;
+    gboolean install = FALSE, start = FALSE, registration = FALSE;
     for (int i = 0; i < argc; i++) {
         if (g_strcmp0(argv[i], "--install-service") == 0) install = TRUE;
         if (g_strcmp0(argv[i], "--start-service") == 0) start = TRUE;
+        if (g_strcmp0(argv[i], "--register-service") == 0) registration = TRUE;
     }
 
-    if (install) {
+    if (registration) return install_or_update() ? 0 : 1;
+    if (install || start) {
         if (!install_or_update()) return 1;
         return start_unit() ? 0 : 1;
     }
-    if (start) return start_unit() ? 0 : 1;
     return 1;
 }

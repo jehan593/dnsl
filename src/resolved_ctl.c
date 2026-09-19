@@ -371,7 +371,11 @@ GPtrArray *resolved_ctl_reassert(GPtrArray *snapshots)
 
         LinkConfigSnapshot *snap = find_snapshot(snapshots, ifindex);
         if (!snap) {
-            snap = capture_link_snapshot(ifindex, dns, domains, default_route);
+            /* The reconciliation below consumes the live read's references. The
+             * snapshot must own separate references, including during the grace
+             * window and when discarding a stale redirect. */
+            snap = capture_link_snapshot(ifindex, g_variant_ref(dns),
+                                         g_variant_ref(domains), default_route);
             /* New link already on our redirect — clear the empty snapshot, let grace handle it. */
             if (is_proxy_redirect_dns(snap->dns)) {
                 g_variant_unref(snap->dns);

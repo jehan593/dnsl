@@ -5,8 +5,7 @@
 #define DNSL_DAEMON_H
 
 /* Blocks running the daemon's GMainLoop until SIGTERM/SIGINT. Returns a process exit code.
- * Must be running as root (binds UDP 53 fails otherwise on Linux — see CLAUDE.md "Elevation" —
- * and the resolve1 D-Bus calls require the system bus policy only root satisfies). */
+ * Must run as root to manage nftables and connection tracking. */
 int daemon_run(void);
 
 #endif
