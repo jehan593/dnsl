@@ -1,7 +1,4 @@
-/* Port of dnsw's Service/LocalProtectionController.cs: runs inside the privileged daemon and does
- * the actual work — turning "protection" on/off means starting/stopping the local DoT proxy AND
- * redirecting/restoring the active links' DNS together, since either alone is useless. ipc_server
- * is the only thing that drives this directly — the tray talks to it exclusively over IPC. */
+/* Runs the proxy and kernel DNS interception as one protection lifecycle. */
 #ifndef DNSL_PROTECTION_CONTROLLER_H
 #define DNSL_PROTECTION_CONTROLLER_H
 

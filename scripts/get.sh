@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # One-line install/update/uninstall for dnsl, fetching the latest prebuilt release from GitHub.
 # Always system-wide (/usr/local) and always run as root — the background daemon that does the
-# actual DNS work needs root regardless (binding port 53, the resolve1 D-Bus calls), so there's no
+# actual DNS work needs root regardless (kernel DNS interception), so there's no
 # real no-root install path to offer here; keep it to one command.
 #
 #   curl -fsSL https://raw.githubusercontent.com/jehan593/dnsl/main/scripts/get.sh | sudo bash
 #   curl -fsSL https://raw.githubusercontent.com/jehan593/dnsl/main/scripts/get.sh | sudo bash -s -- --uninstall
 #
-# This script only places the tray binary + assets on disk, same as install.sh; it never touches
-# dnsl.service or /etc/dnsl/settings.json directly (install.sh --uninstall handles the former when
-# run as root).
+# install.sh updates an existing service and its crash-cleanup unit on root updates.
+# Saved provider preferences are preserved.
 #
 # Install and update are the same command: it always re-fetches the latest release and reinstalls
 # over the previous copy. The extracted release is kept under CACHE_DIR so a later --uninstall (or

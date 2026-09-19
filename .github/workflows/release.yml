@@ -53,10 +53,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config \
             libgtk-3-dev libglib2.0-dev libssl-dev uuid-dev libfontconfig-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev libnetfilter-conntrack-dev nftables openssl python3
 
       - name: Build
-        run: make
+        run: make && make test
 
       - name: Package release tarball
         id: package

@@ -29,20 +29,45 @@ struct DotPool {
     GAsyncQueue *gate;   /* MAX_CONNECTIONS tokens (GINT_TO_POINTER(1)) — bounds concurrency */
     GAsyncQueue *idle;   /* of DotConnection* */
     gint next_ip_index;
-    gboolean disposed;
+    gint disposed;
+    GMutex sockets_mutex;
+    GArray *sockets;
     gint ref_count;
 };
 
 static void dot_pool_free(DotPool *pool);
 
-static void dot_connection_close(DotConnection *conn)
+static void close_pool_socket(DotPool *pool, int fd)
+{
+    g_mutex_lock(&pool->sockets_mutex);
+    for (guint i = 0; i < pool->sockets->len; i++) {
+        if (g_array_index(pool->sockets, int, i) == fd) {
+            g_array_remove_index_fast(pool->sockets, i);
+            break;
+        }
+    }
+    close(fd);
+    g_mutex_unlock(&pool->sockets_mutex);
+}
+
+void dot_pool_cancel(DotPool *pool)
+{
+    if (!pool) return;
+    g_mutex_lock(&pool->sockets_mutex);
+    g_atomic_int_set(&pool->disposed, TRUE);
+    for (guint i = 0; i < pool->sockets->len; i++)
+        shutdown(g_array_index(pool->sockets, int, i), SHUT_RDWR);
+    g_mutex_unlock(&pool->sockets_mutex);
+}
+
+static void dot_connection_close(DotPool *pool, DotConnection *conn)
 {
     if (!conn) return;
     if (conn->ssl) {
         SSL_shutdown(conn->ssl);
         SSL_free(conn->ssl);
     }
-    if (conn->fd >= 0) close(conn->fd);
+    if (conn->fd >= 0) close_pool_socket(pool, conn->fd);
     g_free(conn);
 }
 
@@ -63,6 +88,8 @@ static SSL_CTX *make_ssl_ctx(void)
 DotPool *dot_pool_new(const DnsProvider *provider)
 {
     DotPool *pool = g_new0(DotPool, 1);
+    g_mutex_init(&pool->sockets_mutex);
+    pool->sockets = g_array_new(FALSE, FALSE, sizeof(int));
     pool->provider = dns_provider_copy(provider);
     pool->ssl_ctx = make_ssl_ctx();
     pool->gate = g_async_queue_new();
@@ -120,6 +147,15 @@ static DotConnection *open_connection(DotPool *pool, GError **error)
         g_set_error(error, G_IO_ERROR, g_io_error_from_errno(errno), "socket() failed: %s", g_strerror(errno));
         return NULL;
     }
+    g_mutex_lock(&pool->sockets_mutex);
+    if (g_atomic_int_get(&pool->disposed)) {
+        g_mutex_unlock(&pool->sockets_mutex);
+        close(fd);
+        g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Protection stopped");
+        return NULL;
+    }
+    g_array_append_val(pool->sockets, fd);
+    g_mutex_unlock(&pool->sockets_mutex);
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
@@ -133,9 +169,9 @@ static DotConnection *open_connection(DotPool *pool, GError **error)
         inet_pton(AF_INET, ip, &addr.sin_addr);
         connected = connect_with_timeout(fd, (struct sockaddr *)&addr, sizeof(addr), CONNECT_TIMEOUT_MS);
     }
-    if (!connected) {
+    if (!connected || g_atomic_int_get(&pool->disposed)) {
         g_set_error(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "TCP connect to %s:%d timed out/failed", ip, pool->provider->port);
-        close(fd);
+        close_pool_socket(pool, fd);
         return NULL;
     }
 
@@ -150,14 +186,14 @@ static DotConnection *open_connection(DotPool *pool, GError **error)
         ERR_error_string_n(e, buf, sizeof(buf));
         g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "TLS handshake with %s failed: %s", pool->provider->tls_host, buf);
         SSL_free(ssl);
-        close(fd);
+        close_pool_socket(pool, fd);
         return NULL;
     }
     if (SSL_get_verify_result(ssl) != X509_V_OK) {
         g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "Certificate verification failed for %s", pool->provider->tls_host);
         SSL_shutdown(ssl);
         SSL_free(ssl);
-        close(fd);
+        close_pool_socket(pool, fd);
         return NULL;
     }
 
@@ -216,7 +252,7 @@ static gboolean send_and_receive(DotConnection *conn, const guint8 *query, gsize
 gboolean dot_pool_forward(DotPool *pool, const guint8 *query, gsize query_len,
                            guint8 **out_response, gsize *out_response_len, GError **error)
 {
-    if (pool->disposed) {
+    if (g_atomic_int_get(&pool->disposed)) {
         g_set_error(error, G_IO_ERROR, G_IO_ERROR_CLOSED, "DoT pool already disposed");
         return FALSE;
     }
@@ -225,7 +261,7 @@ gboolean dot_pool_forward(DotPool *pool, const guint8 *query, gsize query_len,
 
     GError *last_error = NULL;
     gboolean ok = FALSE;
-    for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+    for (int attempt = 0; attempt < 2 && !ok && !g_atomic_int_get(&pool->disposed); attempt++) {
         DotConnection *conn = g_async_queue_try_pop(pool->idle);
         if (!conn) {
             g_clear_error(&last_error);
@@ -239,9 +275,10 @@ gboolean dot_pool_forward(DotPool *pool, const guint8 *query, gsize query_len,
         } else {
             /* Stale idle connection or a real failure — indistinguishable until used, so discard
              * and retry once against a guaranteed-fresh connection (mirrors DotConnectionPool.cs). */
+            g_clear_error(&last_error);
             g_set_error(&last_error, G_IO_ERROR, G_IO_ERROR_FAILED,
                         "DNS-over-TLS forward to %s failed", pool->provider->name);
-            dot_connection_close(conn);
+            dot_connection_close(pool, conn);
         }
     }
 
@@ -258,12 +295,14 @@ gboolean dot_pool_forward(DotPool *pool, const guint8 *query, gsize query_len,
 static void dot_pool_free(DotPool *pool)
 {
     if (!pool) return;
-    pool->disposed = TRUE;
+    g_atomic_int_set(&pool->disposed, TRUE);
     DotConnection *conn;
-    while ((conn = g_async_queue_try_pop(pool->idle)) != NULL) dot_connection_close(conn);
+    while ((conn = g_async_queue_try_pop(pool->idle)) != NULL) dot_connection_close(pool, conn);
     g_async_queue_unref(pool->idle);
     g_async_queue_unref(pool->gate);
     SSL_CTX_free(pool->ssl_ctx);
     dns_provider_free(pool->provider);
+    g_array_free(pool->sockets, TRUE);
+    g_mutex_clear(&pool->sockets_mutex);
     g_free(pool);
 }

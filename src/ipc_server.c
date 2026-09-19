@@ -23,7 +23,10 @@ struct IpcServer {
     ProtectionController *controller;
     int listen_fd;
     GThread *accept_thread;
-    volatile gboolean running;
+    gint running;
+    GMutex lifecycle_mutex; /* serializes first/last client transitions */
+    GCond drained;
+    guint workers;
 
     GMutex clients_mutex;
     GPtrArray *clients; /* of ClientConn* */
@@ -125,19 +128,22 @@ static gpointer client_thread(gpointer data)
     ClientConn *client = args->client;
     g_free(args);
 
+    g_mutex_lock(&server->lifecycle_mutex);
     g_mutex_lock(&server->clients_mutex);
     g_ptr_array_add(server->clients, client);
     guint count = server->clients->len;
     g_mutex_unlock(&server->clients_mutex);
     /* First client connects → resume protection if it was on. */
-    if (count == 1) protection_controller_resume_if_desired(server->controller);
+    if (count == 1 && g_atomic_int_get(&server->running))
+        protection_controller_resume_if_desired(server->controller);
+    g_mutex_unlock(&server->lifecycle_mutex);
 
     send_status(server, client, NULL); /* greet with current status */
 
     char *line = NULL;
     size_t cap = 0;
     ssize_t n;
-    while ((n = getline(&line, &cap, client->read_f)) >= 0) {
+    while (g_atomic_int_get(&server->running) && (n = getline(&line, &cap, client->read_f)) >= 0) {
         if (n > 0 && line[n - 1] == '\n') line[n - 1] = '\0';
         IpcCommand *cmd = ipc_parse_command(line);
         if (cmd) {
@@ -148,24 +154,30 @@ static gpointer client_thread(gpointer data)
     }
     free(line);
 
+    g_mutex_lock(&server->lifecycle_mutex);
     g_mutex_lock(&server->clients_mutex);
     g_ptr_array_remove_fast(server->clients, client);
     guint remaining = server->clients->len;
     g_mutex_unlock(&server->clients_mutex);
     /* Last client disconnects → pause protection (preserves preference). */
     if (remaining == 0) protection_controller_pause(server->controller);
+    g_mutex_unlock(&server->lifecycle_mutex);
 
     fclose(client->read_f);
     fclose(client->write_f);
     g_mutex_clear(&client->write_mutex);
     g_free(client);
+    g_mutex_lock(&server->clients_mutex);
+    server->workers--;
+    g_cond_broadcast(&server->drained);
+    g_mutex_unlock(&server->clients_mutex);
     return NULL;
 }
 
 static gpointer accept_loop(gpointer data)
 {
     IpcServer *server = data;
-    while (server->running) {
+    while (g_atomic_int_get(&server->running)) {
         int fd = accept(server->listen_fd, NULL, NULL);
         if (fd < 0) {
             if (errno == EINTR) continue;
@@ -192,6 +204,9 @@ static gpointer accept_loop(gpointer data)
         ClientThreadArgs *args = g_new0(ClientThreadArgs, 1);
         args->server = server;
         args->client = client;
+        g_mutex_lock(&server->clients_mutex);
+        server->workers++;
+        g_mutex_unlock(&server->clients_mutex);
         GThread *t = g_thread_new("dnsl-ipc-client", client_thread, args);
         g_thread_unref(t);
     }
@@ -204,6 +219,8 @@ IpcServer *ipc_server_new(ProtectionController *controller)
     server->controller = controller;
     server->listen_fd = -1;
     g_mutex_init(&server->clients_mutex);
+    g_mutex_init(&server->lifecycle_mutex);
+    g_cond_init(&server->drained);
     server->clients = g_ptr_array_new();
     return server;
 }
@@ -241,7 +258,7 @@ gboolean ipc_server_start(IpcServer *server, GError **error)
     }
 
     server->listen_fd = fd;
-    server->running = TRUE;
+    g_atomic_int_set(&server->running, TRUE);
     protection_controller_set_callbacks(server->controller, on_state_changed, on_error, server);
     server->accept_thread = g_thread_new("dnsl-ipc-accept", accept_loop, server);
     return TRUE;
@@ -249,8 +266,8 @@ gboolean ipc_server_start(IpcServer *server, GError **error)
 
 void ipc_server_stop(IpcServer *server)
 {
-    if (!server->running) return;
-    server->running = FALSE;
+    if (!g_atomic_int_get(&server->running)) return;
+    g_atomic_int_set(&server->running, FALSE);
 
     shutdown(server->listen_fd, SHUT_RDWR);
     close(server->listen_fd);
@@ -263,6 +280,7 @@ void ipc_server_stop(IpcServer *server)
         ClientConn *client = g_ptr_array_index(server->clients, i);
         shutdown(client->fd, SHUT_RDWR);
     }
+    while (server->workers) g_cond_wait(&server->drained, &server->clients_mutex);
     g_mutex_unlock(&server->clients_mutex);
 
     unlink(DNSL_SOCKET_PATH);
@@ -272,7 +290,10 @@ void ipc_server_free(IpcServer *server)
 {
     if (!server) return;
     ipc_server_stop(server);
+    protection_controller_set_callbacks(server->controller, NULL, NULL, NULL);
     g_ptr_array_free(server->clients, TRUE);
     g_mutex_clear(&server->clients_mutex);
+    g_mutex_clear(&server->lifecycle_mutex);
+    g_cond_clear(&server->drained);
     g_free(server);
 }

@@ -8,7 +8,7 @@
 #include "dns_provider.h"
 
 typedef struct {
-    /* Whether the proxy + link redirection was on at last shutdown/pause-cause-of-disconnect
+    /* Whether the proxy + DNS interception was on at last shutdown/pause-cause-of-disconnect
      * that was actually an explicit choice. Read on daemon startup so a reboot with a tray
      * autostart resumes protection automatically. */
     gboolean enabled;

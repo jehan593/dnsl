@@ -1,6 +1,7 @@
 #include "daemon.h"
 #include "protection_controller.h"
 #include "ipc_server.h"
+#include "intercept_ctl.h"
 
 #include <glib-unix.h>
 #include <unistd.h>
@@ -15,8 +16,7 @@ typedef struct {
 static gboolean on_terminate_signal(gpointer data)
 {
     DaemonState *state = data;
-    /* Pause (not Disable) — restores DNS but preserves the user's on/off preference. */
-    protection_controller_pause(state->controller);
+    /* Drain IPC clients before the controller is paused/freed below. */
     g_main_loop_quit(state->loop);
     return G_SOURCE_REMOVE;
 }
@@ -27,6 +27,9 @@ int daemon_run(void)
         fprintf(stderr, "dnsl --daemon must run as root.\n");
         return 1;
     }
+
+    /* Also protects manual daemon starts and upgrades with stale NAT state. */
+    if (intercept_ctl_cleanup_entry() != 0) return 1;
 
     DaemonState state = { 0 };
     state.loop = g_main_loop_new(NULL, FALSE);

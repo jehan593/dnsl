@@ -1,7 +1,4 @@
-/* Port of dnsw's Dns/DnsProxyServer.cs: the local stub resolver dnsl points systemd-resolved at —
- * binds UDP 127.0.0.1:53 (and [::1]:53, when available) and forwards every received query to the
- * currently-selected DnsProvider over DoT via dot_pool, relaying the raw response bytes straight
- * back to whichever process asked. */
+/* Local TCP/UDP DNS proxy for kernel interception; IPv4 and IPv6 loopback. */
 #ifndef DNSL_DNS_PROXY_H
 #define DNSL_DNS_PROXY_H
 
@@ -11,10 +8,8 @@ typedef struct DnsProxy DnsProxy;
 
 DnsProxy *dns_proxy_new(void);
 
-/* Binds the local listener(s) and starts forwarding to `provider`. Fails if already running or if
- * port 53 is already taken by something else (most commonly systemd-resolved's own stub sitting
- * on 127.0.0.53, so this is a real address:port conflict only if something else also grabbed
- * 127.0.0.1:53). `port` is a seam for tests — app code always passes 53. */
+/* Binds all supported transports before returning success. App port is 15353.
+ * Calls on a DnsProxy are serialized by the protection controller. */
 gboolean dns_proxy_start(DnsProxy *proxy, const DnsProvider *provider, int port, GError **error);
 
 /* Points forwarding at a different upstream without rebinding the local socket(s). */

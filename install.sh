@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Installs/uninstalls the dnsl tray binary + assets — mirrors linker-linux's install.sh shape.
-# Install never touches the systemd service: dnsl's own installer.c registers/starts dnsl.service
-# itself (via a one-time pkexec prompt) the first time the tray can't reach it — see CLAUDE.md
-# "Why a systemd service". This script only places files on disk and never needs to run as root
-# for the default per-user PREFIX; use a system PREFIX (e.g. /usr/local, this Makefile's default)
-# with sudo if you want dnsl available for every user on the machine.
+# On a root update, stop an existing service before replacing its binary so the
+# old process can restore its DNS settings. Register the new cleanup unit before
+# restarting. A first install still leaves service setup to the tray prompt.
 #
 # Uninstall DOES tear the service down too, but only when run as root (it can't sudo internally
 # without surprising a piped `curl | bash` — if run unprivileged, it just prints the two commands
@@ -97,11 +95,34 @@ if [ ! -x "$SCRIPT_DIR/dnsl" ]; then
     exit 1
 fi
 
+command -v nft >/dev/null 2>&1 || {
+    echo "error: install nftables before installing dnsl" >&2
+    exit 1
+}
+
+# No silent update under a live daemon: old releases own DNS snapshots that must
+# be restored by the old executable, before its replacement starts interception.
+service_installed=false
+service_was_active=false
+if [ -f /etc/systemd/system/dnsl.service ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "error: update as root so the existing service and cleanup unit can be upgraded" >&2
+        exit 1
+    fi
+    service_installed=true
+    if systemctl is-active --quiet dnsl.service; then service_was_active=true; fi
+fi
+
 echo "Installing dnsl to $PREFIX..."
 kill_running_tray_instances
+if $service_installed; then systemctl stop dnsl.service; fi
 mkdir -p "$BIN_DIR" "$ASSETS_DIR/fonts" "$ASSETS_DIR/icons" "$APPS_DIR"
 
 install -m 755 "$SCRIPT_DIR/dnsl" "$BIN_DIR/dnsl"
+if $service_installed; then
+    "$BIN_DIR/dnsl" --register-service
+    if $service_was_active; then systemctl start dnsl.service; fi
+fi
 cp "$SCRIPT_DIR"/data/fonts/*.ttf "$ASSETS_DIR/fonts/"
 cp "$SCRIPT_DIR"/data/fonts/MARTIAN_MONO_LICENSE.txt "$ASSETS_DIR/fonts/" 2>/dev/null || true
 cp "$SCRIPT_DIR"/data/icons/*.png "$ASSETS_DIR/icons/"
