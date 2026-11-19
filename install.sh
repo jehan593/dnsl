@@ -100,6 +100,11 @@ command -v nft >/dev/null 2>&1 || {
     exit 1
 }
 
+command -v groupadd >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1 || {
+    echo "error: groupadd and usermod (shadow-utils) are required to create the dnsl group" >&2
+    exit 1
+}
+
 # No silent update under a live daemon: old releases own DNS snapshots that must
 # be restored by the old executable, before its replacement starts interception.
 service_installed=false
@@ -151,3 +156,4 @@ command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -t "$I
 echo "Installed."
 echo "Make sure $BIN_DIR is on your PATH, then run 'dnsl' — or find it in your applications menu."
 echo "First launch will prompt once (via pkexec) to install/start the dnsl background service."
+echo "Log out and back in once so your session gets the 'dnsl' group; the tray can't reach the service before then."
