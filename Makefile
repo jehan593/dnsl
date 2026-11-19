@@ -55,8 +55,16 @@ uninstall:
 $(BUILD_DIR)/proxy_harness: tests/proxy_harness.c tests/fake_dot_pool.c src/dns_proxy.c src/intercept_ctl.c | $(BUILD_DIR)
 	$(CC) -Wall -Wextra -Werror -std=gnu11 -g -Isrc $(shell pkg-config --cflags gio-2.0 libnetfilter_conntrack) $^ -o $@ $(shell pkg-config --libs gio-2.0 libnetfilter_conntrack)
 
+# Root runs use a plain network namespace. Ubuntu's AppArmor restriction blocks unprivileged
+# user namespaces (CI runners hit this), and root doesn't need one.
+ifeq ($(shell id -u),0)
+UNSHARE_NET := unshare --net
+else
+UNSHARE_NET := unshare --user --map-root-user --net
+endif
+
 test-netns: $(APP) $(BUILD_DIR)/proxy_harness $(BUILD_DIR)/lifecycle_harness
-	DNSL_TEST_PARENT_NET=$$(readlink /proc/self/ns/net) unshare --user --map-root-user --net python3 tests/interception_test.py --netns
+	DNSL_TEST_PARENT_NET=$$(readlink /proc/self/ns/net) $(UNSHARE_NET) python3 tests/interception_test.py --netns
 
 $(BUILD_DIR)/lifecycle_harness: tests/lifecycle_harness.c tests/fake_dot_pool.c src/protection_controller.c src/dns_proxy.c src/intercept_ctl.c src/dns_provider.c src/ipc_protocol.c src/json_min.c src/ipc_server.c src/settings_store.c src/resolved_ctl.c | $(BUILD_DIR)
 	$(CC) -Wall -Wextra -Werror -std=gnu11 -g -Isrc $(shell pkg-config --cflags gio-2.0 uuid libnetfilter_conntrack) $(filter-out src/ipc_server.c src/settings_store.c,$^) -o $@ $(shell pkg-config --libs gio-2.0 uuid libnetfilter_conntrack)

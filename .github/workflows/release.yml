@@ -56,7 +56,11 @@ jobs:
             libayatana-appindicator3-dev libnetfilter-conntrack-dev nftables openssl python3
 
       - name: Build
-        run: make && make test
+        run: make
+
+      - name: Test
+        # Run as root: the namespace tests can't create user namespaces on Ubuntu runners.
+        run: sudo make test
 
       - name: Package release tarball
         id: package
