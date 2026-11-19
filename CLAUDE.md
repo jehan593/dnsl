@@ -82,6 +82,44 @@ make uninstall                      # removes the above; never touches /etc/dnsl
 No test suite in this repo (matches dnsw's own state) — see "Testing" below for the throwaway
 scratch harnesses used during development instead.
 
+## VPN compatibility invariants (do not break)
+
+VPN behavior was the hardest thing to get right and was only settled after many live tries.
+Any change to `resolved_ctl.c`, `intercept_ctl.c`, `protection_controller.c` or the IPC
+socket must keep these true:
+
+- **Every up, non-loopback link is redirected**, tunnels included (`get_active_links()`). Never
+  limit redirection to the physical link. A VPN's higher-priority DNS would win otherwise.
+- **Routes are never touched**, and no interface names or VPN brands are special-cased.
+  nftables matches port 53 only, regardless of interface.
+- **New links get a 6 s grace window** before they're redirected (`NEW_LINK_GRACE_MS`). A VPN
+  pushes its DNS a few seconds after its interface comes up.
+- **Snapshots restore the exact pre-protection config.** Never record our own `{127.0.0.1, ::1}`
+  redirect as an original. Restore uses `SetLinkDNS`/`SetLinkDomains`, not `RevertLink` alone.
+- **Reassert runs on a 2 s poll plus NM and logind events.** It re-captures any link whose
+  owner re-pushed DNS, so a VPN's latest value is what's restored on disable.
+- **Enable must not fail on a transient link-read error.** `resolved_ctl_reassert()` does not
+  report failed link reads as errors. Enable also has to succeed on systems without
+  systemd-resolved (the nftables layer still covers them). Both are covered by
+  `tests/resolved_snapshot_test.c`.
+- **Port 53 is intercepted in the OUTPUT hook whatever resolved holds.** So a DHCP or VPN
+  re-push, or a resolved restart, can't leak plaintext port-53 queries. Only non-53 traffic
+  depends on the per-link redirect.
+- **Enable clears only direct flows from local addresses** (conntrack). Disable removes only
+  DNSL's own translations. Don't flush other flows, since they may belong to a VPN.
+- **Upstream DoT uses normal routing.** It goes through the VPN and its kill switch, with no
+  `SO_BINDTODEVICE`.
+
+Test coverage: `make test` (resolved snapshot cases for new VPN with DNS, new link awaiting DNS,
+and stale redirect) and `make test-netns` (a dummy `vpn0`, an interface created after Enable,
+resolved-style interface-bound sockets, and restore). Neither uses a real VPN client. Before
+shipping a change here, check on a live machine with a real VPN up: `resolvectl status` shows the
+tunnel link redirected, Enable and Disable keep the VPN working, and Disable restores the
+tunnel's own resolver.
+
+Known gap: if the daemon restarts while a non-NetworkManager tunnel is already parked, its
+pre-protection resolver is lost for that session. Reconnect the VPN after a daemon crash.
+
 ## Architecture
 
 Every module below is a direct port of the named dnsw file unless noted:
@@ -150,7 +188,7 @@ Every module below is a direct port of the named dnsw file unless noted:
   break line-delimited framing — mirrors dnsw's own compact-IPC-vs-indented-settings split
   (`IpcJsonContext` vs `SettingsJsonContext`).
 - **`ipc_server.c`** (`Ipc/IpcServer.cs`) — Unix domain socket at `DNSL_SOCKET_PATH`
-  (`/run/dnsl/control.sock`, mode 0666 — see "IPC socket permissions" below), one `GThread` per
+  (`/run/dnsl/control.sock`, `root:dnsl` mode 0660 — see "IPC socket permissions" below), one `GThread` per
   connected client, first-client-connects/last-client-disconnects hooks drive
   `protection_controller_resume_if_desired`/`_pause` exactly like `IpcServer.cs`'s
   `_clients.Count == 1`/`.IsEmpty` checks. No named-pipe ACL dance needed — Unix sockets don't have
@@ -239,12 +277,13 @@ address); `remote_controller.c` needs no equivalent since only the GTK main thre
 
 ## IPC socket permissions
 
-`DNSL_SOCKET_PATH` is created world-connectable (mode 0666), not locked to a group — deliberately:
-redirecting DNS on a machine any local user can already interact with isn't a privilege escalation
-(they don't gain access to anything they couldn't already reach), so there's no ACL dance needed
-the way dnsw's named-pipe `PipeSecurity` grant was (that one existed to work around Windows'
-per-session object-namespace isolation between the LocalSystem service and the interactive user,
-which Unix domain sockets simply don't have).
+`DNSL_SOCKET_PATH` is owned `root:dnsl` with mode 0660. Only root and members of the `dnsl` group
+can connect. Earlier it was world-connectable (0666). That was wrong: any local user could pick
+the upstream provider (any hostname with a valid certificate, which gives them every machine
+query) or turn protection off. `installer.c` creates the group (`groupadd -f`) and adds the
+invoking user (`PKEXEC_UID` or `SUDO_USER`) before it writes the unit. If the group is missing,
+the daemon falls back to root-only (0600) and logs a warning. Group membership applies to new login
+sessions only, so after the first install log out and back in before the tray can connect.
 
 ## Elevation
 

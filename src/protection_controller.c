@@ -160,7 +160,9 @@ void protection_controller_enable(ProtectionController *pc)
     /* A resolver-less system can still use the nftables path for applications
      * that issue ordinary DNS directly. Do not reject Enable solely because
      * systemd-resolved is absent; when links were captured, however, failure
-     * to configure them would leave the primary NSS path unprotected. */
+     * to configure them would leave the primary NSS path unprotected. Individual
+     * link-read failures are not in this list on purpose: a VPN tunnel can fail
+     * its first read while coming up (see CLAUDE.md, VPN compatibility invariants). */
     if (resolved_errors->len > 0 && pc->link_snapshots->len > 0) {
         gchar *message = g_strdup_printf("Couldn't configure systemd-resolved: %s",
             (gchar *)g_ptr_array_index(resolved_errors, 0));

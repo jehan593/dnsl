@@ -367,7 +367,14 @@ GPtrArray *resolved_ctl_reassert(GPtrArray *snapshots)
 
         GVariant *dns = NULL, *domains = NULL;
         gboolean default_route = FALSE;
-        if (!read_link_config(bus, ifindex, &dns, &domains, &default_route)) continue;
+        /* Deliberately not an error: a tunnel can fail its first read while it is still
+         * coming up, and reporting that would fail Enable on VPN setups. Logged at debug
+         * level only, so the next pass retries the link. Do not turn this into an error
+         * without re-checking the VPN cases in CLAUDE.md. */
+        if (!read_link_config(bus, ifindex, &dns, &domains, &default_route)) {
+            g_debug("resolved: couldn't read DNS settings for link %d; retrying next pass", ifindex);
+            continue;
+        }
 
         LinkConfigSnapshot *snap = find_snapshot(snapshots, ifindex);
         if (!snap) {

@@ -17,7 +17,7 @@ all: $(APP)
 test: $(BUILD_DIR)/resolved_snapshot_test $(BUILD_DIR)/proxy_harness $(BUILD_DIR)/controller_test $(BUILD_DIR)/dot_pool_test
 	./$(BUILD_DIR)/resolved_snapshot_test
 	./$(BUILD_DIR)/controller_test
-	python3 tests/interception_test.py
+	$(MAKE) test-netns
 	python3 tests/dot_pool_test.py
 
 $(BUILD_DIR)/resolved_snapshot_test: tests/resolved_snapshot_test.c $(SRC_DIR)/resolved_ctl.c $(SRC_DIR)/resolved_ctl.h | $(BUILD_DIR)

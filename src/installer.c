@@ -1,7 +1,9 @@
 #include "installer.h"
 #include "app_identity.h"
 #include <glib.h>
+#include <sys/types.h>
 #include <sys/wait.h>
+#include <pwd.h>
 #include <string.h>
 
 static gboolean run_command(const gchar *const *argv, gint *exit_status, gchar **stdout_str, GError **error)
@@ -83,8 +85,42 @@ static gboolean write_unit_file(const gchar *exe_path, GError **error)
     return ok;
 }
 
+/* The user who asked for the install: pkexec sets PKEXEC_UID, install.sh runs under sudo. */
+static gchar *invoking_username(void)
+{
+    const gchar *uid_text = g_getenv("PKEXEC_UID");
+    if (uid_text) {
+        struct passwd *pw = getpwuid((uid_t)g_ascii_strtoull(uid_text, NULL, 10));
+        return pw ? g_strdup(pw->pw_name) : NULL;
+    }
+    const gchar *sudo_user = g_getenv("SUDO_USER");
+    return sudo_user ? g_strdup(sudo_user) : NULL;
+}
+
+/* Creates the control group and adds the installing user. Membership applies to new login
+ * sessions only, so a tray that's already running must be restarted after the first install. */
+static gboolean ensure_control_group(void)
+{
+    gint status = -1;
+    GError *error = NULL;
+    const gchar *group_argv[] = { "groupadd", "-f", DNSL_GROUP, NULL };
+    if (!run_command(group_argv, &status, NULL, &error) || status != 0) { g_clear_error(&error); return FALSE; }
+
+    gchar *user = invoking_username();
+    gboolean ok = TRUE;
+    if (user && *user) {
+        const gchar *usermod_argv[] = { "usermod", "-aG", DNSL_GROUP, user, NULL };
+        ok = run_command(usermod_argv, &status, NULL, &error) && status == 0;
+        g_clear_error(&error);
+    }
+    g_free(user);
+    return ok;
+}
+
 static gboolean install_or_update(void)
 {
+    if (!ensure_control_group()) return FALSE;
+
     gchar *exe_path = get_own_exe_path();
     if (!exe_path) return FALSE;
 

@@ -62,6 +62,13 @@ The chosen provider must be reachable by IP and use a TLS port other than 53
 IPv6 listeners are mandatory when IPv6 loopback is available; a port conflict
 fails Enable rather than silently intercepting into an absent listener.
 
+Name lookups that don't use DNS port 53 are also outside DNSL. LLMNR broadcasts single-label
+names on the local network, and mDNS handles `.local` names. systemd-resolved enables both by
+default, and DNSL doesn't change them. If you don't need them, turn them off yourself in
+`/etc/systemd/resolved.conf` under `[Resolve]` with `LLMNR=no` and `MulticastDNS=no`, then restart
+`systemd-resolved` while protection is off. Global `DNS=` servers and `DNSOverTLS=` in that same
+file can send queries outside DNSL. Keep them unset while DNSL is in use.
+
 ## Installation and migration
 
 Runtime requirements are nftables (`nft`), kernel support for inet-family NAT

@@ -178,7 +178,8 @@ static DotConnection *open_connection(DotPool *pool, GError **error)
     SSL *ssl = SSL_new(pool->ssl_ctx);
     SSL_set_fd(ssl, fd);
     SSL_set_tlsext_host_name(ssl, pool->provider->tls_host);
-    SSL_set1_host(ssl, pool->provider->tls_host);
+    /* Same as SSL_set1_host(), which OpenSSL 4.0 deprecates. */
+    X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), pool->provider->tls_host, 0);
 
     if (SSL_connect(ssl) != 1) {
         unsigned long e = ERR_get_error();
@@ -240,6 +241,12 @@ static gboolean send_and_receive(DotConnection *conn, const guint8 *query, gsize
 
     guint8 *response = g_malloc(response_len > 0 ? response_len : 1);
     if (response_len > 0 && !read_exact(conn->ssl, response, response_len)) {
+        g_free(response);
+        return FALSE;
+    }
+    /* A reply must answer this query. Any mismatch drops the connection, so a stale
+     * or unexpected message can't be handed to the wrong client. */
+    if (response_len < 2 || response[0] != query[0] || response[1] != query[1]) {
         g_free(response);
         return FALSE;
     }

@@ -8,6 +8,9 @@
 
 #define DNSL_RUNTIME_DIR        "/run/dnsl"
 #define DNSL_SOCKET_PATH        "/run/dnsl/control.sock"
+/* Group allowed to use the control socket, besides root. installer.c creates it and
+ * adds the user who installed DNSL. */
+#define DNSL_GROUP              "dnsl"
 
 #define DNSL_SETTINGS_DIR       "/etc/dnsl"
 #define DNSL_SETTINGS_PATH      "/etc/dnsl/settings.json"

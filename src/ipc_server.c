@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
+#include <grp.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
@@ -248,8 +249,17 @@ gboolean ipc_server_start(IpcServer *server, GError **error)
         close(fd);
         return FALSE;
     }
-    /* World-connectable — not a real privilege boundary. */
-    chmod(DNSL_SOCKET_PATH, 0666);
+    /* Root and the dnsl group only. Protection is per-machine, so any other local
+     * user could otherwise pick the upstream provider or turn protection off. If the
+     * group is missing, stay root-only instead of world-connectable. */
+    struct group *control_group = getgrnam(DNSL_GROUP);
+    if (control_group && chown(DNSL_SOCKET_PATH, 0, control_group->gr_gid) == 0) {
+        chmod(DNSL_SOCKET_PATH, 0660);
+    } else {
+        chmod(DNSL_SOCKET_PATH, 0600);
+        g_warning("Group '%s' not found; only root can use %s. Run the dnsl service setup again.",
+                  DNSL_GROUP, DNSL_SOCKET_PATH);
+    }
 
     if (listen(fd, 16) != 0) {
         g_set_error(error, G_IO_ERROR, g_io_error_from_errno(errno), "listen() failed: %s", g_strerror(errno));
