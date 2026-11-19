@@ -1,6 +1,6 @@
 # dnsl
 
-A small Linux tray app for system-wide DNS-over-TLS. Pick an encrypted resolver, flip it on, flip it off — that's it.
+A small Linux tray app for system-wide DNS-over-TLS. Pick an encrypted resolver, flip it on, flip it off ΓÇö that's it.
 
 **Protection on:** intercepts ordinary DNS and sends it to your chosen provider.
 **Protection off or tray exited:** removes interception and restores your network and VPN DNS settings.
@@ -8,7 +8,7 @@ A small Linux tray app for system-wide DNS-over-TLS. Pick an encrypted resolver,
 Requires **nftables**, **libnetfilter_conntrack**, and Linux 5.2+ with conntrack/inet NAT support.
 See [networking and VPN compatibility](docs/networking.md) for the supported scope and upgrade notes.
 
-> **FYI:** This project is fully vibe coded
+> **FYI:** This project is fully vibe coded for my personal use and taste. It's shared publicly in case it's useful to you. Feel free to fork it and adapt it to your needs.
 
 ## Install
 
