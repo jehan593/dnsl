@@ -1,6 +1,6 @@
 # dnsl
 
-A small Linux tray app for system-wide DNS-over-TLS. Pick an encrypted resolver, flip it on, flip it off ΓÇö that's it.
+A small Linux tray app for system-wide DNS-over-TLS. Pick an encrypted resolver, flip it on, flip it off — that's it.
 
 **Protection on:** intercepts ordinary DNS and sends it to your chosen provider.
 **Protection off or tray exited:** removes interception and restores your network and VPN DNS settings.
